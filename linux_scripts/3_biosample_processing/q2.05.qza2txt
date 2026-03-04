@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --job-name=Q2_qza2biom
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH --output=logs/q2.part05.qza2txt.%j.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=3gb
+#SBATCH --account=epi
+#SBATCH --qos=epi-b
+#SBATCH --time=2:00:00
+
+pwd; hostname; date
+
+module load qiime2/2024.10
+
+qiime tools export \
+    --input-path step.02.c.deblur.table-filtered.qza \
+    --output-path biomresults
+
+biom convert -i biomresults/feature-table.biom  -o biomresults/otu_table.txt --to-tsv
+
+
+date
+#
+#
+### Run for   minutes using  mb
