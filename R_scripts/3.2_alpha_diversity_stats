@@ -1,0 +1,179 @@
+
+# ============================================================================ #
+# ----------------------------- STATISTICS ----------------------------------- #
+# ============================================================================ #
+
+#install.packages("BiocManager")
+#remotes::install_github("joey711/phyloseq", force = TRUE)
+
+library(vegan)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(phyloseq)
+library(ape)
+
+# A. OTU Table (Taxa must be columns, Samples must be rows based on your previous code)
+otu_mat <- as.matrix(community_matrix)
+
+# B. Taxonomy Table (Optional for distance calc, but good practice)
+# For 'taxonomy_df', use: tax_mat <- as.matrix(taxonomy_df)
+tax_mat <- matrix(colnames(otu_mat), ncol = 1)
+rownames(tax_mat) <- colnames(otu_mat)
+colnames(tax_mat) <- "Species"
+
+# C. Metadata
+meta_df <- as.data.frame(metadata_sub)
+rownames(meta_df) <- rownames(metadata_sub)
+
+# D. Phylogenetic Tree
+# IF USE A TREE FILE, UNCOMMENT AND USE THIS LINE:
+# tree_file <- read_tree("path/to/your/tree.nwk")
+
+set.seed(1000)
+tree_file <- rtree(ncol(otu_mat), tip.label = colnames(otu_mat))
+
+# Create the Phyloseq Object
+physeq <- phyloseq(
+  otu_table(otu_mat, taxa_are_rows = FALSE),
+  tax_table(tax_mat),
+  sample_data(meta_df),
+  phy_tree(tree_file)
+)
+
+# --------------------------- 1) Kruskal-Wallis ------------------------------ #
+
+library(rstatix)
+library(dplyr)
+library(tibble)
+
+kruskal_shannon <- alpha_plot_data %>% kruskal_test(Shannon ~ Diet_type)
+kruskal_simpson <- alpha_plot_data %>% kruskal_test(Simpson ~ Diet_type)
+kruskal_observed <- alpha_plot_data %>% kruskal_test(Observed ~ Diet_type)
+
+# Combine the global test results into a single data frame
+all_kruskal_results <- bind_rows(kruskal_shannon, kruskal_simpson, kruskal_observed)
+
+# Define the output directory and filename for Kruskal-Wallis results
+out_dir <- "output_bioproj_prim/statistics"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+kruskal_output_file <- file.path(out_dir, "alpha_diet1_kruskal_results.csv")
+
+# Save the global test results to CSV
+write.csv(all_kruskal_results, file = kruskal_output_file, row.names = FALSE)
+message("Global Kruskal-Wallis test results saved to: ", kruskal_output_file)
+
+
+# --- 2. Perform Pairwise Wilcoxon Tests ---
+# This replicates the post-hoc part of your original script.
+
+# Use wilcox_test() which is the rstatix equivalent of pairwise.wilcox.test
+# It returns a tidy data frame. We specify the same 'BH' adjustment method.
+pairwise_shannon <- alpha_plot_data %>%
+  wilcox_test(Shannon ~ Diet_type, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  mutate(metric = "Shannon")
+
+pairwise_simpson <- alpha_plot_data %>%
+  wilcox_test(Simpson ~ Diet_type, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  mutate(metric = "Simpson")
+
+pairwise_observed <- alpha_plot_data %>%
+  wilcox_test(Observed ~ Diet_type, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  mutate(metric = "Observed")
+
+# Combine all pairwise results into a single data frame
+all_pairwise_results <- bind_rows(pairwise_shannon, pairwise_simpson, pairwise_observed)
+
+# Define the output filename for the pairwise results
+pairwise_output_file <- file.path(out_dir, "alpha_diet1_pairwise_wilcox_results.csv")
+
+# Save the pairwise test results to CSV
+write.csv(all_pairwise_results, file = pairwise_output_file, row.names = FALSE)
+message("Pairwise Wilcoxon test results saved to: ", pairwise_output_file)
+
+# -------------------------- 2) Dunn's Test ---------------------------------- #
+
+library(phyloseq)
+library(vegan)
+library(picante)
+library(rstatix)
+library(dplyr)
+library(tibble)
+
+# --- Assumptions ---
+# This script assumes you have a phyloseq object named 'physeq'
+# with 'Diet_type' in its sample data and a phylogenetic tree.
+
+# --- 1. Calculate Alpha Diversity Metrics ---
+alpha_div_richness <- estimate_richness(physeq, measures = c("Observed", "Shannon", "Simpson"))
+otu_table_for_pd <- t(as(otu_table(physeq), "matrix"))
+phylo_tree_for_pd <- phy_tree(physeq)
+alpha_div_faith <- pd(otu_table_for_pd, phylo_tree_for_pd, include.root = FALSE)
+
+# --- 2. Combine All Data into a Single Data Frame ---
+metadata <- data.frame(sample_data(physeq))
+all_alpha_data <- metadata %>%
+  rownames_to_column("SampleID") %>%
+  left_join(rownames_to_column(alpha_div_richness, "SampleID"))
+
+# --- 3. Perform Pairwise Tests Independently for Each Metric ---
+metrics_to_test <- c("Observed", "Shannon", "Simpson")
+all_results_list <- list() 
+
+for (metric_name in metrics_to_test) {
+  
+  # Create a formula for the test, e.g., Observed ~ Diet_type
+  formula <- as.formula(paste(metric_name, "~ Diet_type"))
+  
+  # Prepare data specifically for this metric, removing any NAs
+  current_data <- all_alpha_data %>%
+    select(Diet_type, all_of(metric_name)) %>%
+    filter(!is.na(.data[[metric_name]]))
+  
+  # Check for sufficient group sizes for this specific metric
+  group_counts <- current_data %>%
+    count(Diet_type) %>%
+    filter(n > 1)
+  
+  if (nrow(group_counts) >= 2) {
+    # If we have at least two groups with more than one sample, run the test
+    message(paste("Performing Dunn's test for:", metric_name))
+    
+    dunn_result <- dunn_test(data = current_data, formula = formula, p.adjust.method = "fdr") %>%
+      mutate(metric = metric_name)
+    
+    all_results_list[[metric_name]] <- dunn_result # Add result to our list
+  } else {
+    # Otherwise, skip this metric and inform the user
+    message(paste("Skipping Dunn's test for:", metric_name, "- insufficient data after removing NAs or only one group with n>1."))
+  }
+}
+
+# --- 4. Combine Successful Results and Export ---
+if (length(all_results_list) > 0) {
+  # Combine all the data frames from the list into one
+  final_dunn_results <- bind_rows(all_results_list)
+  
+  # Define output directory and filename
+  out_dir <- "output_bioproj_prim/statistics"
+  output_filename <- "alpha_diet1_dunn_test.csv"
+  
+  # Ensure the output directory exists before trying to save the file
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  # Construct the full path to the output file
+  full_path <- file.path(out_dir, output_filename)
+  
+  # Write the results to the specified path
+  write.csv(final_dunn_results, file = full_path, row.names = FALSE)
+  
+  # Notify the user with the full, correct path
+  message("Successfully saved pairwise test results to: ", full_path)
+  
+} else {
+  message("Analysis complete, but no metrics had sufficient data to perform pairwise tests.")
+}
