@@ -511,9 +511,9 @@ genus_matrix <- genus_matrix[, !duplicated(as.data.frame(t(genus_matrix))), drop
 
 
 # REVISION 2: Updated the heatmap function.
-# - It now uses log1p() transformed data for the color scale.
-# - It displays the original, absolute numbers in the cells.
-# - It correctly calculates and applies text color after clustering.
+# - use log1p() transformed data for the color scale.
+# - (optional) displays the original, absolute numbers in the cells.
+# - calculates and applies text color after clustering.
 pheatmap_grob <- function(mat, title){
   # Use log1p transformation for color scaling. The original matrix 'mat' is for display.
   mat_log <- log1p(mat)
@@ -529,7 +529,6 @@ pheatmap_grob <- function(mat, title){
   # Create the number color matrix based on the original data values
   number_colors_matrix <- ifelse(mat_reordered_by_cols > 1000, "black", "white")
   
-  # Now, create the final plot.
   p <- pheatmap(mat_log, 
                 color = viridis(100),
                 cluster_rows = FALSE,
@@ -559,8 +558,6 @@ pheatmap_grob <- function(mat, title){
 grob_family <- pheatmap_grob(family_matrix, "Family Level (Color by Log Scale)")
 grob_genus  <- pheatmap_grob(genus_matrix, "Genus Level (Color by Log Scale)")
 
-# You can now print or save your grob_family and grob_genus objects
-# Example:
 # grid.newpage()
 grid.draw(grob_family)
 grid.draw(grob_genus)
