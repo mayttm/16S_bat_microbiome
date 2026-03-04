@@ -1,0 +1,89 @@
+#!/bin/bash
+#SBATCH --job-name=Q2.2_Deblur_160
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH --output=logs/q2.part02.deblur_20250417.%j.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=80gb
+#SBATCH --account=epi
+#SBATCH --qos=epi
+#SBATCH --time=336:00:00
+
+pwd; hostname; date
+
+metadata="/blue/cmavian/thongthum.t/bat16s/outq2_160/metadata_160_db_20250417.txt"
+
+module load qiime2/2024.10
+
+# !!!! hey important note: when deblur refers to "sub-OTUs" it means ASVs
+
+#mean error times the read length (at trim-length) gives you the avg number of errors per read, so here its .0017 * 290 = 1/2 an error per merged read
+#asvs are used instead of otus because they are 100% similar whereas otu s were like 97% similar
+#will give you a table of all asvs, with a sequence that represents everything in that asv
+
+qiime deblur denoise-16S \
+    --i-demultiplexed-seqs step.01d.filtered.qza \
+    --p-trim-length 160 \
+    --p-mean-error 0.003125 \
+    --p-min-reads 10 \
+    --p-sample-stats \
+    --o-representative-sequences step.02.a.deblur.repseqs.qza \
+    --o-table step.02.a.deblur.table.qza \
+    --o-stats step.02.a.deblur.stats.qza
+#
+###--p-min-reads default = 10
+#for the metadata file, can add info such as control/experimental groups, and then everything in there is tab delimited
+
+qiime feature-table summarize \
+    --i-table step.02.a.deblur.table.qza \
+    --m-sample-metadata-file metadata_160_db_20250417.txt \
+    --o-visualization step.02.a.deblur.summary.qzv
+#gives you qzv file as output
+
+qiime feature-table tabulate-seqs \
+    --i-data step.02.a.deblur.repseqs.qza \
+    --o-visualization step.02.a.deblur.repseqs.qzv
+#
+### --p-min-reads = min abundance across samples (default = 10)
+
+
+#####  Remove ASVs with total abundance <2
+##    redundant (see --p-min-reads in deblur)
+##qiime feature-table filter-features \
+##    --i-table step.02.a.deblur.table.qza \
+##    --p-min-frequency 2 \
+##    --o-filtered-table step.02.b.deblur.table.minab2.qza
+#
+##
+##qiime feature-table filter-seqs \
+##    --i-data step.02.a.deblur.repseqs.qza \
+##    --i-table step.02.b.deblur.table.minab2.qza \
+##    --o-filtered-data step.02.b.deblur.repseqs.minab2.qza
+##
+##qiime feature-table summarize \
+##    --i-table step.02.b.deblur.table.minab2.qza \
+##    --o-visualization step.02.b.deblur.table.minab2.qzv
+#
+
+date
+
+### Run for 5  minutes  using  mb
+# --p-mean-error: default: 0.005; if we have 300nt read, 0.001 mean error * 300 = 0.3
+# (we used 0.5 with q1 trimming algorithm)
+# Note:  default of --p-min-reads = 10
+# Retain only features appearing at least min_reads times across all samples in the resulting feature table.
+# This is more strict than q1, where we used min frequency = 2 (after dereplicating)
+#
+#
+# the authors (deblur) recommend setting --p-trim-length n (which trim the sequences to length n ) 
+# to n= length to which the median quality score begins to drop too low
+# have a look at the previous step quality plot
+## currently recommended settings: 
+# https://docs.qiime2.org/2018.11/tutorials/moving-pictures/
+# evidence: https://qiita.ucsd.edu/static/doc/html/deblur_quality.html
+#
+# median quality score drops below 30 only at the very end (i.e. over position 400)
+# Note: input file was summarized with quality view; 2nd percentile length is 297, 9th is 308, 98th p.ile is 382
+#
+##### let's cut it at 300
