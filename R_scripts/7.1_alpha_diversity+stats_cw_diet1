@@ -1,0 +1,346 @@
+################################################################################
+## ----------------- ALPHA, BETA, CONFUSION MATRIX: CW_DIET1 ---------------- ##
+################################################################################
+
+# ============================================================================ #
+# -----------  2.1 ALPHA DIVERSITY (Visuals + Kruskal-Wallis) ---------------- #
+# --------------------------- Predictor: CW_DIET1 ---------------------------- #
+# ============================================================================ #
+
+set.seed(1000)
+tree_file <- rtree(ncol(community_matrix), tip.label = colnames(community_matrix))
+
+shannon  <- diversity(community_matrix, index = "shannon")
+observed <- specnumber(community_matrix)
+simpson <- diversity(community_matrix, index = "simpson")
+#pd_result <- pd(community_matrix, tree_file, include.root = FALSE)
+
+# Calculate Indices
+alpha_div <- data.frame(
+  Shannon = shannon,
+  Simpson = simpson,
+  Observed = observed
+)
+
+# Merge back with metadata
+alpha_plot_data <- cbind(alpha_div, metadata_sub)
+
+# ============================================================================ #
+# ---------- NOT INCLUDED: BOXPLOT FUNCTION WITH SIGNIFICANCE BRACKETS ------- #
+# ---------------------------- Predictor: CW_DIET1 --------------------------- #
+# ============================================================================ #
+
+# Load necessary libraries
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(rstatix) # Helper for statistical pipes
+
+plot_alpha <- function(data, y_metric, title) {
+  
+  # 1. DEFINE ORDERED COMPARISONS
+  # Get all unique groups and sort them alphabetically (or by factor level)
+  groups <- sort(unique(as.character(data$cw_diet1)))
+  
+  # Generate comparisons in the specific order:
+  # (1 vs 2, 1 vs 3, 1 vs 4 ... then 2 vs 3, 2 vs 4 ... etc.)
+  my_comparisons <- list()
+  counter <- 1
+  
+  if(length(groups) > 1) {
+    for(i in 1:(length(groups)-1)) {
+      for(j in (i+1):length(groups)) {
+        my_comparisons[[counter]] <- c(groups[i], groups[j])
+        counter <- counter + 1
+      }
+    }
+  }
+  
+  # 2. Calculate global p-value (Kruskal-Wallis)
+  kruskal_p <- kruskal.test(as.formula(paste(y_metric, "~ cw_diet1")), data = data)$p.value
+  subtitle_text <- paste0("Kruskal-Wallis, p = ", sprintf("%.3f", kruskal_p))
+  
+  # 3. Plot Base
+  p <- ggplot(data, aes(x = cw_diet1, y = .data[[y_metric]], fill = cw_diet1)) +
+    geom_boxplot(alpha = 0.8, outlier.shape = NA) +
+    geom_jitter(width = 0.1, size = 0.8, alpha = 0.4, color = "black") +
+    theme_bw() +
+    labs(title = title, subtitle = subtitle_text, x = "Captive/Wild Status + Diet Group", y = y_metric) +
+    scale_fill_manual(values = cw_diet_colors) +
+    
+    # --- LAYER A: NON-SIGNIFICANT (RED) ---
+    stat_compare_means(
+      comparisons = my_comparisons,
+      method = "wilcox.test",
+      label = "p.signif",
+      step.increase = 0.05,    # Consistent step increase
+      tip.length = 0.005,
+      vjust = 0.9,  # vertical justification of asterisk or ns on the bracket
+      color = "red",
+      size = 2.75,
+      symnum.args = list(
+        cutpoints = c(0, 0.05, 1),
+        symbols   = c("", "ns") # Hide significant, show ns
+      )
+    ) +
+    
+    # --- LAYER B: SIGNIFICANT (BLACK) ---
+    stat_compare_means(
+      comparisons = my_comparisons,
+      method = "wilcox.test",
+      label = "p.signif",
+      step.increase = 0.05,    # Must match Layer A
+      tip.length = 0.005,
+      vjust = 0.9,
+      color = "black",        # Force Black
+      symnum.args = list(
+        cutpoints = c(0, 0.001, 0.01, 0.05, 1),
+        symbols   = c("***", "**", "*", "") # Show stars, hide ns
+      )
+    ) +
+    
+    # Theme adjustments
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      plot.subtitle = element_text(hjust = 0.5, size = 10, face = "italic"),
+      axis.title.x = element_text(size = 10, face = "bold"),
+      axis.title.y = element_text(size = 10, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10, color = "black"),
+      axis.text.y = element_text(size = 10)
+    )
+  
+  return(p)
+}
+
+# Generate Plots
+p1 <- plot_alpha(alpha_plot_data, "Shannon", "Shannon Entropy Index")
+p2 <- plot_alpha(alpha_plot_data, "Simpson", "Simpson's Diversity Index")
+p3 <- plot_alpha(alpha_plot_data, "Observed", "Observed Richness")
+
+# Combine and Save
+alpha_plots_cw_diet1 <- ggarrange(p1, p2, p3, ncol = 3, nrow = 1)
+print(alpha_plots_cw_diet1)
+
+out_dir <- "output_bioproj_prim"
+dir.create("output_bioproj_prim", showWarnings = FALSE, recursive = TRUE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("alpha_cw_diet1_sig_nonsig.", ext)),
+    plot = alpha_plots_cw_diet1,
+    width = 16, 
+    height = 10, 
+    units = "in", 
+    dpi = 300,
+    bg = "white"
+  )
+}
+
+# ============================================================================ #
+# -------------- 2.1) BOXPLOT FUNCTION WITH SIG BRACKETS ONLY ---------------- #
+# --------------------------- Predictor: CW_DIET1 ---------------------------- #
+# ============================================================================ #
+
+plot_alpha_sig_only <- function(data, y_metric, title) {
+  
+  # 1. CALCULATE P-VALUES FIRST
+  # We use Wilcoxon test to get p-values for all pairs
+  stat.test <- data %>%
+    wilcox_test(as.formula(paste(y_metric, "~ cw_diet1"))) %>%
+    add_significance()
+  
+  # 2. FILTER FOR SIGNIFICANT PAIRS (p < 0.05)
+  # We keep rows where p is less than 0.05
+  sig_stats <- stat.test %>% filter(p < 0.05)
+  
+  # Create a list of comparisons for ggpubr based on the filter
+  if(nrow(sig_stats) > 0) {
+    my_comparisons <- list()
+    for(i in 1:nrow(sig_stats)) {
+      my_comparisons[[i]] <- c(sig_stats$group1[i], sig_stats$group2[i])
+    }
+  } else {
+    my_comparisons <- NULL # No significant pairs found
+  }
+  
+  # 3. GENERATE PLOT
+  p <- ggplot(data, aes(x = cw_diet1, y = .data[[y_metric]], fill = cw_diet1)) +
+    # Boxplot 
+    geom_boxplot(alpha = 0.8, outlier.shape = NA) +
+    # Add points
+    geom_jitter(width = 0.2, size = 1.0, alpha = 0.6, color = "black") +
+    theme_bw() +
+    labs(title = title, x = "Captive/Wild Status + Diet Group", y = y_metric) +
+    scale_fill_manual(values = cw_diet_colors) +
+    
+    # 4. ADD BRACKETS (Only if significant comparisons exist)
+    {if (!is.null(my_comparisons)) 
+      stat_compare_means(
+        comparisons = my_comparisons,
+        label = "p.signif",    # Displays stars (*, **, ***)
+        method = "wilcox.test",
+        tip.length = 0.01,
+        step.increase = 0.05,  
+        hide.ns = FALSE, 
+        vjust = 0.7
+      )
+    } +
+    
+    theme(
+      legend.position = "none", 
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      axis.title.x = element_text(size = 12, face = "bold"),
+      axis.title.y = element_text(size = 12, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10, color = "black"),
+      axis.text.y = element_text(size = 10)
+    )
+  
+  return(p)
+}
+
+# Generate Plots
+p1_sig <- plot_alpha_sig_only(alpha_plot_data, "Shannon", "Shannon Diversity")
+p2_sig <- plot_alpha_sig_only(alpha_plot_data, "Simpson", "Simpson's Diversity Index")
+p3_sig <- plot_alpha_sig_only(alpha_plot_data, "Observed", "Observed Richness")
+
+# Combine
+alpha_plots_cw_diet1_sig <- ggarrange(p1_sig, p2_sig, p3_sig, ncol = 3, nrow = 1)
+print(alpha_plots_cw_diet1_sig)
+
+out_dir <- "output_bioproj_prim"
+dir.create("output_bioproj_prim", showWarnings = FALSE, recursive = TRUE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("alpha_cw_diet1_sig.", ext)),
+    plot = alpha_plots_cw_diet1_sig,
+    width = 16, 
+    height = 10, 
+    units = "in", 
+    dpi = 300,
+    bg = "white"
+  )
+}
+
+# ============================================================================ #
+# ----------------------------- STATISTICS: CW_DIET1 ------------------------- #
+# ============================================================================ #
+
+library(rstatix)
+library(dplyr)
+library(tibble)
+
+# --- Assumption ---
+# This script assumes you have a data frame named 'alpha_plot_data'
+# which contains the columns 'Shannon', 'Simpson', 'Observed', and 'cw_diet1'.
+
+# --- 1. Perform Global Kruskal-Wallis Tests ---
+# The formula is updated to use 'cw_diet1' as the grouping variable.
+
+kruskal_shannon <- alpha_plot_data %>% kruskal_test(Shannon ~ cw_diet1) 
+kruskal_simpson <- alpha_plot_data %>% kruskal_test(Simpson ~ cw_diet1) 
+kruskal_observed <- alpha_plot_data %>% kruskal_test(Observed ~ cw_diet1) 
+
+# Combine the global test results into a single data frame
+all_kruskal_results <- bind_rows(kruskal_shannon, kruskal_simpson, kruskal_observed)
+
+# Define the output directory and filename for Kruskal-Wallis results
+out_dir <- "output_bioproj_prim/statistics"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+kruskal_output_file <- file.path(out_dir, "alpha_cw_diet1_kruskal_results.csv")
+
+# Save the global test results to CSV
+write.csv(all_kruskal_results, file = kruskal_output_file, row.names = FALSE)
+message("Global Kruskal-Wallis test results saved to: ", kruskal_output_file)
+
+
+# --- 2. Perform Pairwise Wilcoxon Tests ---
+# The formula is updated here as well to use 'cw_diet1'.
+
+pairwise_shannon <- alpha_plot_data %>%
+  wilcox_test(Shannon ~ cw_diet1, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  mutate(metric = "Shannon")
+
+pairwise_simpson <- alpha_plot_data %>%
+  wilcox_test(Simpson ~ cw_diet1, p.adjust.method = "BH") %>% 
+  add_significance("p.adj") %>%
+  mutate(metric = "Simpson")
+
+pairwise_observed <- alpha_plot_data %>%
+  wilcox_test(Observed ~ cw_diet1, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  mutate(metric = "Observed")
+
+# Combine all pairwise results into a single data frame
+all_pairwise_results <- bind_rows(pairwise_shannon, pairwise_simpson, pairwise_observed)
+
+# Define the output filename for the pairwise results
+pairwise_output_file <- file.path(out_dir, "alpha_cw_diet1_pairwise_wilcox_results.csv")
+
+# Save the pairwise test results to CSV
+write.csv(all_pairwise_results, file = pairwise_output_file, row.names = FALSE)
+message("Pairwise Wilcoxon test results saved to: ", pairwise_output_file)
+
+# -------------------------- 2) Dunn's Test to CSV ---------------------------------- #
+
+# Load necessary libraries
+library(phyloseq)
+library(vegan)
+library(rstatix)
+library(dplyr)
+library(tibble)
+
+# --- Assumptions ---
+# This script assumes you have a phyloseq object named 'physeq'
+# with a 'cw_diet1' column in its sample data.
+
+# --- 1. Calculate Alpha Diversity Metrics ---
+alpha_div_richness <- estimate_richness(physeq, measures = c("Observed", "Shannon", "Simpson"))
+
+# --- 2. Combine All Data into a Single Data Frame ---
+metadata <- data.frame(sample_data(physeq))
+all_alpha_data <- metadata %>%
+  rownames_to_column("SampleID") %>%
+  left_join(rownames_to_column(alpha_div_richness, "SampleID"))
+
+# --- 3. Perform Pairwise Dunn's Tests using 'cw_diet1' ---
+metrics_to_test <- c("Observed", "Shannon", "Simpson")
+all_results_list <- list()
+
+for (metric_name in metrics_to_test) {
+  
+  formula <- as.formula(paste(metric_name, "~ cw_diet1"))
+  
+  current_data <- all_alpha_data %>%
+    select(cw_diet1, all_of(metric_name)) %>%
+    filter(!is.na(.data[[metric_name]]))
+  
+  group_counts <- current_data %>%
+    count(cw_diet1) %>% ### CHANGED ###
+    filter(n > 1)
+  
+  if (nrow(group_counts) >= 2) {
+    message(paste("Performing Dunn's test for:", metric_name))
+    dunn_result <- dunn_test(data = current_data, formula = formula, p.adjust.method = "fdr") %>%
+      mutate(metric = metric_name)
+    all_results_list[[metric_name]] <- dunn_result
+  } else {
+    message(paste("Skipping Dunn's test for:", metric_name, "- insufficient data."))
+  }
+}
+
+if (length(all_results_list) > 0) {
+  final_dunn_results <- bind_rows(all_results_list)
+  
+  out_dir <- "output_bioproj_prim/statistics"
+  output_filename <- "alpha_cw_diet1_dunn_test.csv"
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+  full_path <- file.path(out_dir, output_filename)
+  
+  write.csv(final_dunn_results, file = full_path, row.names = FALSE)
+  message("Successfully saved pairwise Dunn's test results to: ", full_path)
+} else {
+  message("Analysis complete, but no metrics had sufficient data to perform pairwise tests.")
+}
