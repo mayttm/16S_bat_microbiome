@@ -1,0 +1,83 @@
+#!/bin/bash
+#SBATCH --job-name=Cleaned_FASTQ_Check
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH -o ./logs/05.check_cleaned_ctadt.%A_%a.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=3
+#SBATCH --mem-per-cpu=5gb
+#SBATCH --account=epi
+#SBATCH --qos=epi-b
+#SBATCH --time=10:00:00
+
+pwd; hostname; date
+
+module load gzip
+
+# Directory containing FASTQ files
+DIR="/blue/cmavian/thongthum.t/bat16s/out03_cutadapt_cleaned"
+
+# Read the list of input files
+myFiles=($(<inputFiles.list))
+
+# Loop through each base name in inputFiles.list
+for base in "${myFiles[@]}"; do
+    full_path="$DIR/${base}_L001_R1_001.fastq.gz"
+    
+    # Check if the expected file exists
+    if [[ ! -f "$full_path" ]]; then
+        echo "Skipping: File $full_path not found."
+        continue
+    fi
+    
+    echo "Processing file: $full_path"
+    
+    # Test if the file is properly compressed
+    if ! gunzip -t "$full_path" 2>/dev/null; then
+        echo "? ERROR: $full_path is corrupted or not a valid gzip file."
+        continue
+    fi
+    
+    # Decompress temporarily for checking
+    temp_file="${full_path%.gz}"
+    gunzip -c "$full_path" > "$temp_file"
+
+    # Check if the number of lines is a multiple of 4 (FASTQ format)
+    total_lines=$(wc -l < "$temp_file")
+    if (( total_lines % 4 != 0 )); then
+        echo "? ERROR: $full_path has an incorrect number of lines ($total_lines)."
+    else
+        echo "? FASTQ structure looks correct."
+    fi
+
+    # Check that each third line is a proper separator ('+')
+    invalid_separator=$(awk 'NR % 4 == 3 && $0 != "+" {print NR, $0}' "$temp_file")
+    if [ -n "$invalid_separator" ]; then
+        echo "? ERROR: Invalid separator '+' found in the file at the following lines:"
+        echo "$invalid_separator"
+    else
+        echo "? Separator '+' is correctly placed in the file."
+    fi
+
+    # Check for unexpected 'rc' in headers
+    if grep -q " rc$" "$temp_file"; then
+        echo "?? WARNING: $full_path contains 'rc' in some headers. Consider cleaning."
+        grep " rc$" "$temp_file" | head -5  # Show a few examples
+    fi
+
+    # Check for empty sequences (lines 2, 6, 10,... should not be empty)
+    empty_sequences=$(awk 'NR % 4 == 2 && $0 == "" {print NR}' "$temp_file")
+    if [ -n "$empty_sequences" ]; then
+        echo "? ERROR: Empty sequence found at the following lines:"
+        echo "$empty_sequences"
+    fi
+
+
+    # Clean up temporary file
+    rm "$temp_file"
+    echo "-----------------------------------"
+done
+
+echo "Checking cleaned fastq files completed"
+
+date
