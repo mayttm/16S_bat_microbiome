@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# Check if PARENT_DIR is provided as a command-line argument
+if [ -z "$1" ]; then
+    echo "Error: Parent directory argument is missing."
+    exit 1
+fi
+
+# Define the parent directory and the output directory
+PARENT_DIR=$1
+OUTPUT_DIR="${PARENT_DIR}/input"
+
+# Create the output directory if it doesn't exist
+mkdir -p "$OUTPUT_DIR"
+
+# Loop through each subdirectory in the parent directory
+for SUBDIR in "$PARENT_DIR"/*/; do
+    # Check if the directory exists
+    if [ -d "$SUBDIR" ]; then
+        # Get the subdirectory (subdirectory name)
+        SUBDIR_NAME=$(basename "$SUBDIR")
+
+        # Loop through each .fastq.gz file in the subdirectory
+        for FASTQ_FILE in "$SUBDIR"*.fastq.gz; do
+            # Check if the fastq.gz file exists
+            if [ -f "$FASTQ_FILE" ]; then
+                # Determine if the file is a forward or reverse read based on "_1" or "_2" in the filename
+                if [[ "$FASTQ_FILE" == *_1.fastq.gz ]]; then
+                    READ="R1"
+                elif [[ "$FASTQ_FILE" == *_2.fastq.gz ]]; then
+                    READ="R2"
+                else
+                    echo "Warning: Could not determine read direction for $FASTQ_FILE"
+                    continue
+                fi
+
+                # Extract the base filename without "_1.fastq.gz" or "_2.fastq.gz"
+                BASENAME=$(basename "$FASTQ_FILE" | sed -E 's/_[12]\.fastq\.gz$//')
+
+                # Construct the new filename in Casava 1.8 format
+                NEW_FILENAME="${SUBDIR_NAME}_${BASENAME}_L001_${READ}_001.fastq.gz"
+
+                # Copy and rename the file to the output directory
+                echo "Processing file: $FASTQ_FILE"
+                cp "$FASTQ_FILE" "${OUTPUT_DIR}/${NEW_FILENAME}"
+            fi
+        done
+    fi
+done
+
+echo "Processing complete. Renamed files are located in '$OUTPUT_DIR'."
