@@ -1,0 +1,101 @@
+#!/bin/bash
+#SBATCH --job-name=Q2.03_CoreMetricsNTaxonomy
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH --output=logs/q2.part04.coreMetrics_20250919.%j.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=40gb
+#SBATCH --account=epi
+#SBATCH --qos=epi-b
+#SBATCH --time=24:00:00
+
+pwd; hostname; date
+
+metadata="/blue/cmavian/thongthum.t/bat16s/outq2_160/metadata_160_20250905.txt"
+
+module load qiime2/2024.10
+
+#Define variables of interest to be used later for the group comparisons of beta diversity:
+#myCols=("sample_type", "species")
+
+myCols=("sample_type" "diet_2" "captive_wild" "roost_group")
+#And Sampling depth:
+sampDepth=2500
+#
+
+#need to set this so you can reach plateu on the rarifaction curve, but lose as few samples as possible
+#Alpha and beta stats
+#matrix used for either alpha or beta diversity will tell you the number of samples, number of sequences for each sample, as well as the genetic distance between each of the samples
+qiime diversity core-metrics-phylogenetic \
+    --i-phylogeny tree.rooted.qza \
+    --i-table step.02.c.deblur.table-filtered.qza \
+    --p-sampling-depth $sampDepth \
+    --m-metadata-file $metadata \
+    --output-dir coreMetrics
+
+#Alpha div.metrics significance
+
+qiime diversity alpha-group-significance \
+    --i-alpha-diversity coreMetrics/faith_pd_vector.qza \
+    --m-metadata-file $metadata \
+    --o-visualization coreMetrics/faith_pd.significance.qzv
+
+qiime diversity alpha-group-significance \
+    --i-alpha-diversity coreMetrics/shannon_vector.qza \
+    --m-metadata-file $metadata \
+    --o-visualization coreMetrics/shannon.significance.qzv
+
+
+qiime diversity alpha-group-significance \
+    --i-alpha-diversity coreMetrics/evenness_vector.qza \
+    --m-metadata-file $metadata \
+    --o-visualization coreMetrics/evenness.significance.qzv
+
+
+#Beta div.metrics significance 
+#
+#Loop each variable:
+nCols=${#myCols[@]}
+for i in $(seq 0 $((nCols-1)))
+do
+    qiime diversity beta-group-significance \
+        --i-distance-matrix coreMetrics/unweighted_unifrac_distance_matrix.qza \
+        --m-metadata-file $metadata \
+        --m-metadata-column ${myCols[$i]} \
+        --o-visualization coreMetrics/unifrac.significance.${myCols[$i]}.qzv \
+        --p-pairwise
+
+    qiime diversity beta-group-significance \
+        --i-distance-matrix coreMetrics/weighted_unifrac_distance_matrix.qza \
+        --m-metadata-file $metadata \
+        --m-metadata-column ${myCols[$i]} \
+        --o-visualization coreMetrics/wunifrac.significance.${myCols[$i]}.qzv \
+        --p-pairwise
+done
+
+
+#qiime feature-classifier classify-sklearn \
+#    --i-classifier /blue/cmavian/thongthum.t/greengenes/2024.09.backbone.v4.nb.sklearn-1.4.2.qza \
+#    --i-reads step.02.b.deblur.repseqs-filtered.qza \
+#    --o-classification step.04.taxonomy.qza
+
+qiime feature-classifier classify-sklearn \
+    --i-classifier /blue/cmavian/thongthum.t/FL_bats/Julia_project/classifier/silva138-v3v4-classifier.qza \
+    --i-reads step.02.b.deblur.repseqs-filtered.qza \
+    --o-classification step.04.taxonomy.qza
+
+qiime metadata tabulate \
+    --m-input-file step.04.taxonomy.qza \
+    --o-visualization step.04.taxonomy.qzv
+
+qiime taxa barplot \
+    --i-table step.02.b.deblur.table-filtered.qza \
+    --i-taxonomy step.04.taxonomy.qza \
+    --m-metadata-file $metadata \
+    --o-visualization step.04.taxonomy.barplot.qzv
+
+date
+
+
+### Run for 6  minutes using   0.9 gb
