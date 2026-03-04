@@ -1,0 +1,32 @@
+## ========================================================================== ##
+## ------------------------ FIG 1 PANEL ARRANGEMENT ------------------------- ##
+# ------------------------------ Predictor: DIET1 ---------------------------- #
+
+library(ggpubr)
+
+combined_plots_diet1 <- ggarrange(
+  alpha_plots_diet1_sig,
+  beta_plots_diet1,
+  conf_mat_plot_diet1,
+  ncol = 1, 
+  nrow = 3,
+  labels = c("A", "B", "C")
+)
+
+# Display the combined plot
+print(combined_plots_diet1)
+
+# Save the plot in multiple formats
+out_dir <- "output_bioproj_prim/_FIGURES"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("fig1_diet1_panel.", ext)),
+    plot = combined_plots_diet1,
+    width = 14,
+    height = 18,
+    units = "in",
+    dpi = 300
+  )
+}
