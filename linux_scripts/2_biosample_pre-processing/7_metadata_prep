@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --job-name=Q2_metadata_check
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH --output=logs/q2.metadata.%j.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=5gb
+#SBATCH --account=cmavian
+#SBATCH --qos=cmavian-b
+#SBATCH --time=1:00:00
+
+pwd; hostname; date
+
+metadata="/blue/cmavian/thongthum.t/bat16s/metadata.txt"
+
+module load qiime2/2024.5
+
+qiime metadata tabulate \
+  --m-input-file $metadata \
+  --o-visualization metadata.qzv
+
+date
