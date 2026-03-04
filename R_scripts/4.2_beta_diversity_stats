@@ -1,1 +1,103 @@
+## ----------------------------- STATISTICS --------------------------------- ##
 
+library(phyloseq)
+library(vegan)
+library(pairwiseAdonis)
+library(dplyr)
+library(tibble)
+library(broom) 
+
+# --- 1. Pre-computation of Distances ---
+
+metadata <- data.frame(sample_data(physeq))
+dist_bray <- distance(physeq, method = "bray")
+dist_wunifrac <- distance(physeq, method = "wunifrac")
+dist_uunifrac <- distance(physeq, method = "unifrac")
+
+# Define output directory
+out_dir <- "output_bioproj_prim/statistics"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# --- 2. Homogeneity of Dispersion (PERMDISP) to CSV ---
+
+permadisp_bray <- tidy(anova(betadisper(dist_bray, metadata$Diet_type))) %>% mutate(metric = "Bray-Curtis")
+permadisp_wunifrac <- tidy(anova(betadisper(dist_wunifrac, metadata$Diet_type))) %>% mutate(metric = "Weighted UniFrac")
+permadisp_uunifrac <- tidy(anova(betadisper(dist_uunifrac, metadata$Diet_type))) %>% mutate(metric = "Unweighted UniFrac")
+
+all_permadisp_results <- bind_rows(permadisp_bray, permadisp_wunifrac, permadisp_uunifrac)
+permadisp_output_file <- file.path(out_dir, "beta_diet1_permadisp.csv")
+write.csv(all_permadisp_results, file = permadisp_output_file, row.names = FALSE)
+message("PERMDISP results saved to: ", permadisp_output_file)
+
+# --- 3. Global PERMANOVA (adonis2) to CSV ---
+
+permanova_bray <- tidy(adonis2(dist_bray ~ Diet_type, data = metadata, permutations = 999)) %>% mutate(metric = "Bray-Curtis")
+permanova_wunifrac <- tidy(adonis2(dist_wunifrac ~ Diet_type, data = metadata, permutations = 999)) %>% mutate(metric = "Weighted UniFrac")
+permanova_uunifrac <- tidy(adonis2(dist_uunifrac ~ Diet_type, data = metadata, permutations = 999)) %>% mutate(metric = "Unweighted UniFrac")
+
+all_permanova_results <- bind_rows(permanova_bray, permanova_wunifrac, permanova_uunifrac)
+permanova_output_file <- file.path(out_dir, "beta_diet1_permanova_global.csv")
+write.csv(all_permanova_results, file = permanova_output_file, row.names = FALSE)
+message("Global PERMANOVA results saved to: ", permanova_output_file)
+
+# --- 4. Pairwise PERMANOVA to TXT ---
+metadata <- data.frame(sample_data(physeq))
+
+# --- 1. Pre-computation of Distances ---
+metadata <- data.frame(sample_data(physeq))
+dist_bray <- distance(physeq, method = "bray")
+physeq_binary <- transform_sample_counts(physeq, function(x) ifelse(x > 0, 1, 0))
+dist_wunifrac <- distance(physeq, method = "wunifrac")
+dist_uunifrac <- distance(physeq, method = "unifrac")
+
+# --- 2. Run Statistical Analyses and Generate Report ---
+output_file <- "output_bioproj_prim/statistics/beta_diet1_pairwise.txt"
+sink(output_file)
+# --- Header ---
+cat("==========================================================\n")
+cat("          BETA DIVERSITY STATISTICAL ANALYSIS\n")
+cat("Date:", as.character(Sys.Date()), "\n")
+cat("Grouping Variable: Diet_type\\\n")
+cat("==========================================================\n\n")
+# --- A. BRAY-CURTIS ANALYSIS ---
+cat("A. BRAY-CURTIS (Abundance)\n")
+cat("==========================================================\n\n")
+cat("1. Homogeneity of Dispersion (PERMDISP):\n")
+print(anova(betadisper(dist_bray, metadata$Diet_type)))
+cat("\n2. Overall PERMANOVA (adonis2):\n")
+print(adonis2(dist_bray ~ Diet_type, data = metadata, permutations = 999))
+cat("\n3. Pairwise PERMANOVA (p-values adjusted with FDR):\n")
+pairwise_bray <- pairwise.adonis2(dist_bray ~ Diet_type, data = metadata, p.adjust.m = "fdr")
+print(pairwise_bray)
+cat("\n\n")
+
+# --- C. WEIGHTED UNIFRAC ANALYSIS ---
+cat("C. WEIGHTED UNIFRAC (Phylogeny + Abundance)\n")
+cat("==========================================================\n\n")
+cat("1. Homogeneity of Dispersion (PERMDISP):\n")
+print(anova(betadisper(dist_wunifrac, metadata$Diet_type)))
+cat("\n2. Overall PERMANOVA (adonis2):\n")
+print(adonis2(dist_wunifrac ~ Diet_type, data = metadata, permutations = 999))
+cat("\n3. Pairwise PERMANOVA (p-values adjusted with FDR):\n")
+pairwise_wunifrac <- pairwise.adonis2(dist_wunifrac ~ Diet_type, data = metadata, p.adjust.m = "fdr")
+print(pairwise_wunifrac)
+cat("\n\n")
+
+# --- D. UNWEIGHTED UNIFRAC ANALYSIS ---
+cat("D. UNWEIGHTED UNIFRAC (Phylogeny + Presence/Absence)\n")
+cat("==========================================================\n\n")
+cat("1. Homogeneity of Dispersion (PERMDISP):\n")
+print(anova(betadisper(dist_uunifrac, metadata$Diet_type)))
+cat("\n2. Overall PERMANOVA (adonis2):\n")
+print(adonis2(dist_uunifrac ~ Diet_type, data = metadata, permutations = 999))
+cat("\n3. Pairwise PERMANOVA (p-values adjusted with FDR):\n")
+pairwise_uunifrac <- pairwise.adonis2(dist_uunifrac ~ Diet_type, data = metadata, p.adjust.m = "fdr")
+print(pairwise_uunifrac)
+cat("\n\n")
+
+# --- End of Report ---
+cat("==========================================================\n")
+cat("                      End of Report\n")
+cat("==========================================================\n")
+sink()
+message("Complete statistical results with pairwise tests have been saved to: ", output_file)
