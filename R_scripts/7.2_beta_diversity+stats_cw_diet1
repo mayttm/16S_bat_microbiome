@@ -1,0 +1,363 @@
+# ============================================================================ #
+## ---------------- NOT INCLUDED: Beta diversity PCOA ------------------------ #
+# ============================================================================ #
+
+# Merge with metadata for plotting
+pcoa_plot_data <- cbind(pcoa_df, metadata_sub)
+
+# 1. DEFINE CUSTOM SHAPES
+diet_shapes <- c(
+  "Blood"  = 16,
+  "Insect" = 3,
+  "Fruit"  = 15,
+  "Fish"   = 17) 
+
+# 16 = Circle, 15 = Square, 17 = Triangle, 18 = Diamond
+cw_diet_shapes <- c(
+  # --- INSECT (diamond) ---
+  "Wild_Insect"              = 18,
+  "Captive_Insect"           = 3,
+  "Wild_probably_Insect"     = 18,
+  "Captive_probably_Insect"  = 3,
+  
+  # --- FRUIT (Squares) ---
+  "Wild_Fruit"               = 15,
+  "Wild_probably_Fruit"      = 15,
+  "Captive_probably_Fruit"   = 15,
+  
+  # --- BLOOD (cirlce) ---
+  "Wild_Blood"               = 16,
+  "Wild_probably_Blood"      = 16,
+  
+  # --- FISH (triangle) ---
+  "Wild_probably_Fish"       = 17
+)
+
+# 2. PLOT WITH MANUAL SHAPES
+beta_plot_cwdiet <- ggplot(pcoa_plot_data, aes(x = PC1, y = PC2, color = cw_diet1, shape = cw_diet1)) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_ellipse(aes(fill = cw_diet1), geom = "polygon", alpha = 0.1, level = 0.95) +
+  theme_bw() +
+  labs(
+    title = "PCoA of Bray-Curtis Dissimilarity",
+    x = paste0("PCoA 1 (", eig_percent[1], "%)"),
+    y = paste0("PCoA 2 (", eig_percent[2], "%)"),
+    
+    color = "Captive/Wild Status + Diet Group",
+    shape = "Captive/Wild Status + Diet Group",
+    fill  = "Captive/Wild Status + Diet Group"
+  ) +
+  
+  
+  # --- COLORS ---
+  scale_color_manual(values = cw_diet_colors) +  
+  scale_fill_manual(values = cw_diet_colors) +
+  
+  # --- SHAPES (NEW) ---
+  scale_shape_manual(values = cw_diet_shapes) +  
+  
+  # --- THEME ---
+  theme(
+    plot.margin = ggplot2::margin(t = 20, r = 10, b = 10, l = 10, unit = "pt"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 10), 
+    axis.title = element_text(size = 8, face = "bold"),              
+    axis.text = element_text(size = 8),                              
+    legend.title = element_text(size = 10, face = "bold"),            
+    legend.text = element_text(size = 8)                             
+  )
+
+print(beta_plot_cwdiet)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("beta_bray_cwdiet1.", ext)),
+    plot = beta_plot_cwdiet,
+    width = 10, 
+    height = 8, 
+    units = "in", 
+    dpi = 300,
+    bg = "white"
+  )
+}
+
+# ============================================================================ #
+## ----------------- 2.2) BETA DIVERSITY MULTIPLE PCOA PLOTS ---------------- ##
+## --------------------------- Predictor: CW_DIET1 -------------------------- ##
+# ============================================================================ #
+
+library(vegan)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(phyloseq)
+library(ape) 
+
+# ---------- 0. SETUP COLORS & SHAPES (From previous steps)
+
+cw_diet_colors <- c(
+  "Wild_Insect" = "#ff5e2b", 
+  "Captive_Insect" = "#e37f05", 
+  "Wild_probably_Insect" = "#fa8246", 
+  "Captive_probably_Insect" = "#fcb644",
+  "Wild_Fruit" = "#2E8B57", 
+  "Wild_probably_Fruit" = "#1b5e3a", 
+  "Captive_probably_Fruit" = "#80e35f",
+  "Wild_Blood" = "#ba0970", 
+  "Wild_probably_Blood" = "#e329da", 
+  "Wild_probably_Fish" = "#303F9F"
+)
+
+cw_diet_shapes <- c(
+  # --- INSECT (diamond) ---
+  "Wild_Insect"              = 18,
+  "Captive_Insect"           = 3,
+  "Wild_probably_Insect"     = 18,
+  "Captive_probably_Insect"  = 3,
+  
+  # --- FRUIT (Squares) ---
+  "Wild_Fruit"               = 15,
+  "Wild_probably_Fruit"      = 15,
+  "Captive_probably_Fruit"   = 15,
+  
+  # --- BLOOD (cirlce) ---
+  "Wild_Blood"               = 16,
+  "Wild_probably_Blood"      = 16,
+  
+  # --- FISH (triangle) ---
+  "Wild_probably_Fish"       = 17
+)
+
+# ------------ A. PREPARE PHYLOSEQ OBJECT
+
+# A. OTU Table (Taxa must be columns, Samples must be rows based on your previous code)
+otu_mat <- as.matrix(community_matrix)
+
+# B. Taxonomy Table (Optional for distance calc, but good practice)
+# create a dummy tax table if you don't have the original 'taxonomy_df' handy
+# For 'taxonomy_df', use: tax_mat <- as.matrix(taxonomy_df)
+tax_mat <- matrix(colnames(otu_mat), ncol = 1)
+rownames(tax_mat) <- colnames(otu_mat)
+colnames(tax_mat) <- "Species"
+
+# C. Metadata
+meta_df <- as.data.frame(metadata_sub)
+rownames(meta_df) <- rownames(metadata_sub)
+
+# D. Phylogenetic Tree (CRITICAL FOR UNIFRAC)
+# ------------------------------------------------------------------
+# IF USE A TREE FILE, UNCOMMENT AND USE THIS LINE:
+# tree_file <- read_tree("path/to/your/tree.nwk")
+
+set.seed(1000)
+tree_file <- rtree(ncol(otu_mat), tip.label = colnames(otu_mat))
+# ------------------------------------------------------------------
+
+# Create the Phyloseq Object
+physeq <- phyloseq(
+  otu_table(otu_mat, taxa_are_rows = FALSE),
+  tax_table(tax_mat),
+  sample_data(meta_df),
+  phy_tree(tree_file)
+)
+
+# -------------- B. FUNCTION TO GENERATE PCoA PLOTS
+plot_beta_metric <- function(physeq_obj, distance_method, title, weighted = FALSE) {
+  
+  # Calculate Distance
+  # UniFrac requires special handling in the ordinate function
+  if (distance_method == "wunifrac") {
+    ord <- ordinate(physeq_obj, method = "PCoA", distance = "unifrac", weighted = TRUE)
+  } else if (distance_method == "unifrac") {
+    ord <- ordinate(physeq_obj, method = "PCoA", distance = "unifrac", weighted = FALSE)
+  } else {
+    ord <- ordinate(physeq_obj, method = "PCoA", distance = distance_method)
+  }
+  
+  # Plot using phyloseq's built-in plotter (easier wrapper for ggplot)
+  p <- plot_ordination(physeq_obj, ord, color = "cw_diet1", shape = "cw_diet1") +
+    geom_point(size = 1.5, alpha = 0.8) +
+    stat_ellipse(aes(fill = cw_diet1), geom = "polygon", alpha = 0.1, level = 0.95) +
+    theme_bw() +
+    labs(title = title) +
+    
+    # Custom Colors and Shapes
+    scale_color_manual(values = cw_diet_colors) +
+    scale_fill_manual(values = cw_diet_colors) +
+    scale_shape_manual(values = cw_diet_shapes) +
+    
+    # Theme settings
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      axis.title = element_text(size = 10, face = "bold"),
+      axis.text = element_text(size = 8),
+      legend.position = "none" # Hide legend for individual plots
+    )
+  
+  return(p)
+}
+
+# ------------ C. GENERATE THE THREE PCOA PLOTS
+
+# 1. Bray-Curtis (Abundance based)
+p_bray <- plot_beta_metric(physeq, "bray", "Bray-Curtis (Abundance)")
+
+# 2. Jaccard (Presence/Absence based)
+# binary = TRUE is handled automatically by phyloseq for "jaccard" usually, 
+# but "jaccard" in vegan is inherently quantitative. 
+# For true binary Jaccard in phyloseq, use distance="jaccard", binary=TRUE
+# Simulated here by converting data to presence/absence first for this plot
+
+physeq_binary <- transform_sample_counts(physeq, function(x) ifelse(x > 0, 1, 0))
+#p_jaccard <- plot_beta_metric(physeq_binary, "jaccard", "Jaccard (Presence/Absence)")
+
+# 3. Weighted UniFrac (Phylogeny + Abundance)
+p_wunifrac <- plot_beta_metric(physeq, "wunifrac", "Weighted UniFrac (Phylogeny + Abundance)")
+
+# 4. Unweighted UniFrac (Phylogeny + Presence/Absence)
+p_unifrac <- plot_beta_metric(physeq, "unifrac", "Unweighted UniFrac (Phylogeny + Presence/Absence)")
+
+# ------------ D. COMBINE AND SAVE
+# Extract the legend from one of the plots to share it
+p_bray <- p_bray + 
+  scale_color_manual(name = "Captive/Wild Status + Diet Group", values = cw_diet_colors) +
+  scale_fill_manual(name = "Captive/Wild Status + Diet Group", values = cw_diet_colors) +
+  scale_shape_manual(name = "Captive/Wild Status + Diet Group", values = cw_diet_shapes) +   
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 10)
+  )
+
+# 2. Extract the legend again with the new title
+legend_bray <- get_legend(p_bray + theme(legend.position = "right"))
+
+beta_plots_cw_diet1 <- ggarrange(
+  p_bray, p_wunifrac, p_unifrac,
+  ncol = 3, nrow = 1,
+  common.legend = TRUE,
+  legend = "right",
+  legend.grob = legend_bray
+)
+
+print(beta_plots_cw_diet1)
+
+# Define output directory
+out_dir <- "output_bioproj_prim"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("beta_cwdiet1_panel.", ext)),
+    plot = beta_plots_cw_diet1,
+    width = 16, 
+    height = 6, 
+    units = "in", 
+    dpi = 300,
+    bg = "white"
+  )
+}
+
+# ----------------------------- STATISTICS ----------------------------------- #
+
+library(phyloseq)
+library(vegan)
+library(pairwiseAdonis)
+library(dplyr)
+library(tibble)
+library(broom) 
+
+# --- 1. Pre-computation of Distances ---
+
+metadata <- data.frame(sample_data(physeq))
+dist_bray <- distance(physeq, method = "bray")
+dist_wunifrac <- distance(physeq, method = "wunifrac")
+dist_uunifrac <- distance(physeq, method = "unifrac")
+
+# Define output directory
+out_dir <- "output_bioproj_prim/statistics"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# --- 2. Homogeneity of Dispersion (PERMDISP) to CSV ---
+
+permadisp_bray <- tidy(anova(betadisper(dist_bray, metadata$cw_diet1))) %>% mutate(metric = "Bray-Curtis")
+permadisp_wunifrac <- tidy(anova(betadisper(dist_wunifrac, metadata$cw_diet1))) %>% mutate(metric = "Weighted UniFrac")
+permadisp_uunifrac <- tidy(anova(betadisper(dist_uunifrac, metadata$cw_diet1))) %>% mutate(metric = "Unweighted UniFrac")
+
+all_permadisp_results <- bind_rows(permadisp_bray, permadisp_wunifrac, permadisp_uunifrac)
+permadisp_output_file <- file.path(out_dir, "beta_cw_diet1_permadisp.csv")
+write.csv(all_permadisp_results, file = permadisp_output_file, row.names = FALSE)
+message("PERMDISP results saved to: ", permadisp_output_file)
+
+# --- 3. Global PERMANOVA (adonis2) to CSV ---
+
+permanova_bray <- tidy(adonis2(dist_bray ~ cw_diet1, data = metadata, permutations = 999)) %>% mutate(metric = "Bray-Curtis")
+permanova_wunifrac <- tidy(adonis2(dist_wunifrac ~ cw_diet1, data = metadata, permutations = 999)) %>% mutate(metric = "Weighted UniFrac")
+permanova_uunifrac <- tidy(adonis2(dist_uunifrac ~ cw_diet1, data = metadata, permutations = 999)) %>% mutate(metric = "Unweighted UniFrac")
+
+all_permanova_results <- bind_rows(permanova_bray, permanova_wunifrac, permanova_uunifrac)
+permanova_output_file <- file.path(out_dir, "beta_cw_diet1_permanova_global.csv")
+write.csv(all_permanova_results, file = permanova_output_file, row.names = FALSE)
+message("Global PERMANOVA results saved to: ", permanova_output_file)
+
+# --- 4. Pairwise PERMANOVA to TXT ---
+metadata <- data.frame(sample_data(physeq))
+
+# --- 1. Pre-computation of Distances ---
+metadata <- data.frame(sample_data(physeq))
+dist_bray <- distance(physeq, method = "bray")
+physeq_binary <- transform_sample_counts(physeq, function(x) ifelse(x > 0, 1, 0))
+dist_wunifrac <- distance(physeq, method = "wunifrac")
+dist_uunifrac <- distance(physeq, method = "unifrac")
+
+# --- 2. Run Statistical Analyses and Generate Report ---
+output_file <- "output_bioproj_prim/statistics/beta_cw_diet1_pairwise.txt"
+sink(output_file)
+# --- Header ---
+cat("==========================================================\n")
+cat("          BETA DIVERSITY STATISTICAL ANALYSIS\n")
+cat("Date:", as.character(Sys.Date()), "\n")
+cat("Grouping Variable: cw_diet1\\\n")
+cat("==========================================================\n\n")
+# --- A. BRAY-CURTIS ANALYSIS ---
+cat("A. BRAY-CURTIS (Abundance)\n")
+cat("==========================================================\n\n")
+cat("1. Homogeneity of Dispersion (PERMDISP):\n")
+print(anova(betadisper(dist_bray, metadata$cw_diet1)))
+cat("\n2. Overall PERMANOVA (adonis2):\n")
+print(adonis2(dist_bray ~ cw_diet1, data = metadata, permutations = 999))
+cat("\n3. Pairwise PERMANOVA (p-values adjusted with FDR):\n")
+pairwise_bray <- pairwise.adonis2(dist_bray ~ cw_diet1, data = metadata, p.adjust.m = "fdr")
+print(pairwise_bray)
+cat("\n\n")
+
+# --- C. WEIGHTED UNIFRAC ANALYSIS ---
+cat("C. WEIGHTED UNIFRAC (Phylogeny + Abundance)\n")
+cat("==========================================================\n\n")
+cat("1. Homogeneity of Dispersion (PERMDISP):\n")
+print(anova(betadisper(dist_wunifrac, metadata$cw_diet1)))
+cat("\n2. Overall PERMANOVA (adonis2):\n")
+print(adonis2(dist_wunifrac ~ cw_diet1, data = metadata, permutations = 999))
+cat("\n3. Pairwise PERMANOVA (p-values adjusted with FDR):\n")
+pairwise_wunifrac <- pairwise.adonis2(dist_wunifrac ~ cw_diet1, data = metadata, p.adjust.m = "fdr")
+print(pairwise_wunifrac)
+cat("\n\n")
+
+# --- D. UNWEIGHTED UNIFRAC ANALYSIS ---
+cat("D. UNWEIGHTED UNIFRAC (Phylogeny + Presence/Absence)\n")
+cat("==========================================================\n\n")
+cat("1. Homogeneity of Dispersion (PERMDISP):\n")
+print(anova(betadisper(dist_uunifrac, metadata$cw_diet1)))
+cat("\n2. Overall PERMANOVA (adonis2):\n")
+print(adonis2(dist_uunifrac ~ cw_diet1, data = metadata, permutations = 999))
+cat("\n3. Pairwise PERMANOVA (p-values adjusted with FDR):\n")
+pairwise_uunifrac <- pairwise.adonis2(dist_uunifrac ~ cw_diet1, data = metadata, p.adjust.m = "fdr")
+print(pairwise_uunifrac)
+cat("\n\n")
+
+# --- End of Report ---
+cat("==========================================================\n")
+cat("                      End of Report\n")
+cat("==========================================================\n")
+sink()
+message("Complete statistical results with pairwise tests have been saved to: ", output_file)
