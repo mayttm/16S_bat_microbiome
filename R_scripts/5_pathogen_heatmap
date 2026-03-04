@@ -1,0 +1,599 @@
+
+#setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/pathogen_heatmap")
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/pathogen_heatmap")
+
+##============================================================================##
+
+## defining functions
+
+library(tidyverse)
+library(stringr)
+
+extract_taxonomic_info <- function(column_name) {
+  if (!is.character(column_name)) {
+    return(list(family = NA, genus = NA))
+  }
+  
+  # Extract family
+  family_match <- str_extract(column_name, "f__([^;]+)")
+  family <- ifelse(!is.na(family_match), str_remove(family_match, "f__"), NA)
+  
+  # Extract genus
+  genus_match <- str_extract(column_name, "g__([^;]+)")
+  genus <- ifelse(!is.na(genus_match), str_remove(genus_match, "g__"), NA)
+  
+  return(list(family = family, genus = genus))
+}
+
+
+process_csv_file <- function(input_file, output_file) {
+  # Read the CSV file
+  df <- read_csv(input_file, show_col_types = FALSE)
+  
+  # Remove outliers if present
+  #outliers <- c("K058683-R", "K058706-R", "K058789-R", "K058689-R", 
+  #              "K058814-R", "K058785-R", "K058700-R", "K058796-R", 
+  #              "K058824-R", "K058810-R", "K058694-R")
+  
+  # Check if outliers exist in the data
+  #if (any(outliers %in% df$index)) {
+  #  df <- df[!df$index %in% outliers, ]
+  #  cat(sprintf("Removed %d outlier samples\n", sum(outliers %in% df$index)))
+  #}
+  
+  taxonomic_cols <- names(df)[grepl("^d__(Bacteria|Archaea);", names(df))]
+  cat(sprintf("Found %d taxonomic columns\n", length(taxonomic_cols)))
+  
+  tax_info <- tibble(
+    column = taxonomic_cols,
+    family = sapply(taxonomic_cols, function(x) extract_taxonomic_info(x)$family),
+    genus = sapply(taxonomic_cols, function(x) extract_taxonomic_info(x)$genus)
+  ) %>%
+    filter(!is.na(family) & !is.na(genus))
+  
+  # Reshape
+  long_df <- df %>%
+    select(index, Common.name_Species, Diet_type, all_of(tax_info$column)) %>%
+    pivot_longer(
+      cols = all_of(tax_info$column),
+      names_to = "tax_column",
+      values_to = "reads"
+    ) %>%
+    filter(reads > 0) %>%
+    left_join(tax_info, by = c("tax_column" = "column")) %>%
+    select(-tax_column)
+  
+  result <- long_df %>%
+    group_by(Family = family, Animal = Common.name_Species, Genus = genus, Group = Diet_type) %>%
+    summarise(
+      Reads = sum(reads, na.rm = TRUE),
+      Species = n_distinct(index),  
+      Sample_Indices = paste(sort(unique(index)), collapse = ";"),  # All index names separated by ;
+      .groups = "drop"
+    ) %>%
+    arrange(Family, Animal, desc(Reads))
+  
+  # Save results to CSV
+  write_csv(result, output_file)
+  cat(sprintf("Results saved to %s\n", output_file))
+  
+  cat(sprintf("Total unique families: %d\n", n_distinct(result$Family)))
+  cat(sprintf("Total unique animals: %d\n", n_distinct(result$Animal)))
+  cat(sprintf("Total unique genera: %d\n", n_distinct(result$Genus)))
+  cat(sprintf("Total rows in output: %d\n", nrow(result)))
+  cat(sprintf("Total samples (index values): %d\n", n_distinct(df$index)))
+  
+  diet_summary <- result %>%
+    group_by(Group) %>%
+    summarise(
+      Total_Reads = sum(Reads),
+      Unique_Families = n_distinct(Family),
+      Total_Samples = n_distinct(unlist(str_split(Sample_Indices, ";")))
+    )
+  
+  print(diet_summary)
+  
+  # Print top families
+  top_families <- result %>%
+    group_by(Family) %>%
+    summarise(Total_Reads = sum(Reads)) %>%
+    arrange(desc(Total_Reads)) %>%
+    head(10)
+  
+  cat("\nTop 10 Families by Total Reads:\n")
+  print(top_families)
+  
+  return(result)
+}
+
+process_target_families <- function(input_file, output_file, target_families = NULL) {
+  
+  # ADD HERE TO THE LIST...
+  if (is.null(target_families)) {
+    target_families <- c(
+      "Campylobacteraceae",
+      "Chlamydiaceae",
+      "Coxiellaceae",
+      "Enterobacteriaceae",
+      "Enterococcaceae",
+      "Helicobacteraceae",
+      "Legionellaceae",
+      "Leptospiraceae",
+      "Moraxellaceae",
+      "Mycobacteriaceae",
+      "Pasteurellaceae",
+      "Staphylococcaceae",
+      "Streptococcaceae"
+    )
+  }
+  
+  # Read the CSV file
+  df <- read_csv(input_file, show_col_types = FALSE)
+  
+  # Remove outliers
+  #outliers <- c("K058683-R", "K058706-R", "K058789-R", "K058689-R", 
+  #              "K058814-R", "K058785-R", "K058700-R", "K058796-R", 
+  #              "K058824-R", "K058810-R", "K058694-R")
+  
+  #if (any(outliers %in% df$index)) {
+  #  df <- df[!df$index %in% outliers, ]}
+  
+  taxonomic_cols <- names(df)[grepl("^d__(Bacteria|Archaea);", names(df))]
+  
+  # Extract taxonomic info
+  tax_info <- tibble(
+    column = taxonomic_cols,
+    family = sapply(taxonomic_cols, function(x) extract_taxonomic_info(x)$family),
+    genus = sapply(taxonomic_cols, function(x) extract_taxonomic_info(x)$genus)
+  ) %>%
+    filter(!is.na(family) & !is.na(genus) & family %in% target_families)
+  
+  # Reshape
+  result <- df %>%
+    select(index, Common.name_Species, Diet_type, all_of(tax_info$column)) %>%
+    pivot_longer(
+      cols = all_of(tax_info$column),
+      names_to = "tax_column",
+      values_to = "reads"
+    ) %>%
+    filter(reads > 0) %>%
+    left_join(tax_info, by = c("tax_column" = "column")) %>%
+    select(-tax_column) %>%
+    group_by(Family = family, Animal = Common.name_Species, Genus = genus, Group = Diet_type) %>%
+    summarise(
+      Reads = sum(reads, na.rm = TRUE),
+      Species = n_distinct(index), 
+      Sample_Indices = paste(sort(unique(index)), collapse = ";"), 
+      .groups = "drop"
+    ) %>%
+    arrange(Family, Animal, desc(Reads))
+  
+  write_csv(result, output_file)
+  
+  return(result)
+}
+
+get_data_sample <- function(input_file, n_samples = 5) {
+  df <- read_csv(input_file, show_col_types = FALSE)
+  
+  cat(sprintf("Total rows: %d, Total columns: %d\n", nrow(df), ncol(df)))
+  
+  cat("\nColumn names (first 20):\n")
+  print(head(names(df), 20))
+  
+  cat("\nSample of index, Animal and Diet_type columns:\n")
+  sample_data <- df %>%
+    select(index, Common.name_Species, Diet_type) %>%
+    distinct() %>%
+    head(n_samples)
+  print(sample_data)
+  
+  cat("\nTaxonomic column example:\n")
+  tax_cols <- names(df)[grepl("^d__(Bacteria|Archaea);", names(df))]
+  if (length(tax_cols) > 0) {
+    print(head(tax_cols, 3))
+    cat("\nExample values from first taxonomic column:\n")
+    print(head(df[[tax_cols[1]]], 5))
+  }
+  
+  return(df)
+}
+
+get_data_sample <- function(input_file, n_samples = 5) {
+  df <- read_csv(input_file, show_col_types = FALSE)
+  
+  cat(sprintf("Total rows: %d, Total columns: %d\n", nrow(df), ncol(df)))
+  
+  cat("\nColumn names (first 20):\n")
+  print(head(names(df), 20))
+  
+  cat("\nSample of index, Animal and Diet_type columns:\n")
+  sample_data <- df %>%
+    select(index, Common.name_Species, Diet_type) %>%
+    distinct() %>%
+    head(n_samples)
+  print(sample_data)
+  
+  cat("\nTaxonomic column example:\n")
+  tax_cols <- names(df)[grepl("^d__(Bacteria|Archaea);", names(df))]
+  if (length(tax_cols) > 0) {
+    print(head(tax_cols, 3))
+    cat("\nExample values from first taxonomic column:\n")
+    print(head(df[[tax_cols[1]]], 5))
+  }
+  
+  return(df)
+}
+
+# Main execution
+main <- function() {
+  
+  # Set your input file path
+  input_file <- "data/df_taxa_metadata_160.csv"
+  
+  # Check if file exists
+  if (!file.exists(input_file)) {
+    cat(sprintf("Error: Input file '%s' not found.\n", input_file))
+    return(NULL)
+  }
+  
+  df <- get_data_sample(input_file)
+  
+  # Get the total number of unique indices
+  cat(sprintf("\nTotal unique index values in data: %d\n", n_distinct(df$index)))
+  
+  output_file1 <- "output_bat16S/all_families_analysis.csv"
+  all_results <- process_csv_file(input_file, output_file1)
+  
+  output_file2 <- "output_bat16S/heatmap_data.csv"
+  target_results <- process_target_families(input_file, output_file2)
+  
+}
+
+input_file <- "data/df_taxa_metadata_160.csv"
+
+check_sample_coverage <- function(results) {
+  
+  all_indices <- results %>%
+    pull(Sample_Indices) %>%
+    str_split(";") %>%
+    unlist() %>%
+    unique() %>%
+    sort()
+  
+  cat(sprintf("Total unique indices in results: %d\n", length(all_indices)))
+  
+  indices_by_family <- results %>%
+    group_by(Family) %>%
+    summarise(
+      Indices = paste(unique(unlist(str_split(Sample_Indices, ";"))), collapse = ";"),
+      Index_Count = n_distinct(unlist(str_split(Sample_Indices, ";")))
+    ) %>%
+    arrange(desc(Index_Count))
+  
+  cat("\nTop 10 families by number of samples (indices):\n")
+  print(head(indices_by_family, 10))
+  
+  return(all_indices)
+}
+
+results <- main()
+
+################################################################################
+
+library(pheatmap)
+library(viridis)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(tibble)
+library(ggplot2)
+
+### ----- original scripts -----
+all_data <- read.csv("output_bat16S/heatmap_data.csv", stringsAsFactors = FALSE)
+
+animal_data <- all_data %>%
+  select(Family, Genus, Animal, Reads) %>%
+  filter(!is.na(Reads))  # Remove rows without Reads
+genus_info <- all_data %>%
+  select(Family, Genus) %>%
+  distinct() %>%
+  filter(!is.na(Genus))  
+animal_groups_df <- all_data %>%
+  select(Animal, Group) %>%
+  distinct() %>%
+  filter(!is.na(Group))  
+animal_groups <- animal_groups_df %>%
+  column_to_rownames("Animal") %>%
+  as.data.frame()
+species_data <- all_data %>%
+  select(Animal, Species) %>%
+  distinct() %>%
+  filter(!is.na(Species))  # Remove rows without Species count
+
+group_colors <- list(
+  Group = c(      "Insect" = "#ff5e2b",
+                  "Blood"   = "#800080",
+                  "Fruit"  = "#2E8B57",
+                  "Fish"  = "#303F9F")
+)
+
+# Modify animal names to include species count
+col_names <- paste0(species_data$Animal, " (", species_data$Species, ")")
+names(col_names) <- species_data$Animal
+
+# Ensure animal_groups is in the same order as species_data
+animal_groups <- animal_groups[species_data$Animal, , drop = FALSE]
+
+# FAMILY MATRIX
+family_matrix <- animal_data %>%
+  group_by(Family, Animal) %>%
+  summarise(Reads = sum(Reads), .groups = 'drop') %>%
+  pivot_wider(names_from = Animal, values_from = Reads, values_fill = 0) %>%
+  column_to_rownames("Family") %>%
+  as.matrix() %>%
+  .[, species_data$Animal]  # order columns by species_data
+
+family_matrix <- family_matrix[, !duplicated(as.data.frame(t(family_matrix))), drop = FALSE]
+
+# GENUS MATRIX
+genus_matrix <- animal_data %>%
+  left_join(genus_info, by = "Genus") %>%
+  group_by(Genus, Animal) %>%
+  summarise(Reads = sum(Reads), .groups = 'drop') %>%
+  pivot_wider(names_from = Animal, values_from = Reads, values_fill = 0) %>%
+  column_to_rownames("Genus") %>%
+  as.matrix() %>%
+  .[, species_data$Animal]  
+
+genus_matrix <- genus_matrix[, !duplicated(as.data.frame(t(genus_matrix))), drop = FALSE]
+
+### ------ Top 10 Abundance Cut Off 
+
+# 1. LOAD ORIGINAL DATA
+#all_data <- read.csv("output_bat16S/heatmap_data.csv", stringsAsFactors = FALSE)
+
+# 2. IDENTIFY TOP 10 FAMILIES (By Total Reads)
+#top_families <- all_data %>%
+#  group_by(Family) %>%
+#  summarise(Total_Reads = sum(Reads, na.rm = TRUE)) %>%
+#  arrange(desc(Total_Reads)) %>%
+#  slice_head(n = 10) %>%
+#  pull(Family)
+
+# 3. IDENTIFY TOP 10 GENERA (By Total Reads)
+#top_genera <- all_data %>%
+#  group_by(Genus) %>%
+#  summarise(Total_Reads = sum(Reads, na.rm = TRUE)) %>%
+#  arrange(desc(Total_Reads)) %>%
+#  slice_head(n = 10) %>%
+#  pull(Genus)
+
+# 4. FILTER DATA
+# Keep rows that match EITHER the top families OR the top genera
+#cutoff_data <- all_data %>%
+#  filter(Family %in% top_families | Genus %in% top_genera)
+
+# 5. EXPORT THE CUTOFF CSV
+#write.csv(cutoff_data, "output_bat16S/heatmap_data_cutoff_top10.csv", row.names = FALSE)
+
+### ----- 5% prevalence of the sample 
+
+all_data <- read.csv("output_bat16S/heatmap_data.csv", stringsAsFactors = FALSE)
+
+# 2. CALCULATE TOTAL SAMPLES IN DATASET
+total_samples_in_dataset <- sum(unique(all_data[c("Animal", "Species")])$Species)
+cutoff_threshold <- total_samples_in_dataset * 0.05
+
+cat(sprintf("Total Samples: %d\n", total_samples_in_dataset))
+cat(sprintf("10%% Cutoff Threshold: %.2f samples\n", cutoff_threshold))
+
+# 3. CALCULATE PREVALENCE PER GENUS
+genus_prevalence <- all_data %>%
+  filter(Reads > 0) %>%
+  group_by(Genus) %>%
+  summarise(
+    # Summing 'Species' (sample count) for every Animal where this genus was found
+    n_samples_present = sum(Species, na.rm = TRUE)
+  ) %>%
+  filter(n_samples_present >= cutoff_threshold)
+
+# 4. FILTER THE MAIN DATA
+# Keep only rows where the Genus is in our 'kept' list
+data_filtered <- all_data %>%
+  filter(Genus %in% genus_prevalence$Genus)
+
+# 5. FILTER FAMILY LEVEL (Optional but recommended for consistency)
+# We do the same logic for Families
+family_prevalence <- all_data %>%
+  filter(Reads > 0) %>%
+  group_by(Family) %>%
+  summarise(n_samples_present = sum(Species, na.rm = TRUE)) %>%
+  filter(n_samples_present >= cutoff_threshold)
+
+data_filtered <- data_filtered %>%
+  filter(Family %in% family_prevalence$Family)
+
+write.csv(data_filtered, "output_bat16S/heatmap_data_cutoff_5%.csv", row.names = FALSE)
+
+### ------ include only animal with at least 20 distinct samples (indices)
+
+# 1. Load Data
+#all_data <- read.csv("output_bat16S/heatmap_data.csv", stringsAsFactors = FALSE)
+all_data <- read.csv("output_bat16S/heatmap_data_cutoff_5%.csv", stringsAsFactors = FALSE)
+
+table(all_data$Animal)
+
+# 2. FILTER ROWS: Keep only Animals with >= 10 samples
+# This removes rows where the 'species' count is less than 10
+all_data_filtered <- all_data %>%
+  filter(Species >= 10)
+
+# Check how many animals remain
+cat(sprintf("Original unique animals: %d\n", n_distinct(all_data$Animal)))
+cat(sprintf("Animals remaining (>= 10 samples): %d\n", n_distinct(all_data_filtered$Animal)))
+
+# 3. SAVE THE FILTERED DATA
+write.csv(all_data_filtered, "output_bat16S/heatmap_data_cutoff_5%_10samples.csv", row.names = FALSE)
+
+# ============================================================================ #
+# ----------------------------- working script ------------------------------- #
+# ============================================================================ #
+
+# Load necessary libraries
+library(dplyr)
+library(tibble)
+library(pheatmap)
+library(viridis)
+library(grid)
+library(gtable)
+
+# Load and prepare data (no changes here)
+all_data <- read.csv("output_bat16S/heatmap_data_cutoff_5%_10samples.csv", stringsAsFactors = FALSE)
+
+animal_data <- all_data %>%
+  select(Family, Animal, Reads) %>%
+  filter(!is.na(Reads))
+
+genus_info <- all_data %>%
+  select(Family, Genus) %>%
+  distinct() %>%
+  filter(!is.na(Genus))
+
+animal_groups_df <- all_data %>%
+  select(Animal, Group) %>%
+  distinct() %>%
+  filter(!is.na(Group))
+
+animal_groups <- animal_groups_df %>%
+  column_to_rownames("Animal") %>%
+  as.data.frame()
+
+species_data <- all_data %>%
+  select(Animal, Species) %>%
+  distinct() %>%
+  filter(!is.na(Species))
+
+# REVISION 1: Removed "Fish" from the group_colors list for the legend
+group_colors <- list(
+  Group = c( "Insect" = "#ff5e2b",
+            "Blood"  = "#ba0970",
+            "Fruit"  = "#2E8B57",
+            "Fish"   = "#303F9F")
+)
+
+# Prepare column names and order annotation (no changes here)
+col_names <- paste0(species_data$Animal, " (", species_data$Species, ")")
+names(col_names) <- species_data$Animal
+animal_groups <- animal_groups[species_data$Animal, , drop = FALSE]
+
+# Create Family and Genus matrices with raw counts (no changes here)
+# FAMILY MATRIX
+family_matrix <- animal_data %>%
+  group_by(Family, Animal) %>%
+  summarise(Reads = sum(Reads), .groups = 'drop') %>%
+  pivot_wider(names_from = Animal, values_from = Reads, values_fill = 0) %>%
+  column_to_rownames("Family") %>%
+  as.matrix()
+family_matrix <- family_matrix[, species_data$Animal]
+family_matrix <- family_matrix[, !duplicated(as.data.frame(t(family_matrix))), drop = FALSE]
+
+# GENUS MATRIX
+genus_matrix <- all_data %>%
+  select(Genus, Animal, Reads) %>%
+  group_by(Genus, Animal) %>%
+  summarise(Reads = sum(Reads), .groups = 'drop') %>%
+  pivot_wider(names_from = Animal, values_from = Reads, values_fill = 0) %>%
+  column_to_rownames("Genus") %>%
+  as.matrix()
+genus_matrix <- genus_matrix[, species_data$Animal]
+genus_matrix <- genus_matrix[, !duplicated(as.data.frame(t(genus_matrix))), drop = FALSE]
+
+
+# REVISION 2: Updated the heatmap function.
+# - It now uses log1p() transformed data for the color scale.
+# - It displays the original, absolute numbers in the cells.
+# - It correctly calculates and applies text color after clustering.
+pheatmap_grob <- function(mat, title){
+  # Use log1p transformation for color scaling. The original matrix 'mat' is for display.
+  mat_log <- log1p(mat)
+  
+  # Run a preliminary pheatmap on the log-data to get the column clustering order
+  p_temp <- pheatmap(mat_log, cluster_rows = FALSE, cluster_cols = TRUE, silent = TRUE)
+  col_cluster <- p_temp$tree_col
+  
+  # To correctly color the numbers, we must create a color matrix that is
+  # in the same final order as the clustered heatmap.
+  mat_reordered_by_cols <- mat[, col_cluster$order]
+  
+  # Create the number color matrix based on the original data values
+  number_colors_matrix <- ifelse(mat_reordered_by_cols > 1000, "black", "white")
+  
+  # Now, create the final plot.
+  p <- pheatmap(mat_log, 
+                color = viridis(100),
+                cluster_rows = FALSE,
+                cluster_cols = col_cluster, 
+                annotation_col = animal_groups,
+                annotation_colors = group_colors,
+                main = title,
+                fontsize = 10,
+                angle_col = 45,
+                display_numbers = FALSE, #change to mat to display the original raw counts
+                number_format = "%.0f",
+                number_color = number_colors_matrix, 
+                border_color = "grey60",
+                cellwidth = 40,
+                cellheight = 20,
+                silent = TRUE
+  )
+  
+  # Extract gtable and add background (no changes here)
+  gt <- p$gtable
+  bg_rect <- rectGrob(gp = gpar(fill = "white", col = NA))
+  final_grob <- gTree(children = gList(bg_rect, gt))
+  return(final_grob)
+}
+
+# Create grobs with updated titles to reflect the log scale for colors
+grob_family <- pheatmap_grob(family_matrix, "Family Level (Color by Log Scale)")
+grob_genus  <- pheatmap_grob(genus_matrix, "Genus Level (Color by Log Scale)")
+
+# You can now print or save your grob_family and grob_genus objects
+# Example:
+# grid.newpage()
+grid.draw(grob_family)
+grid.draw(grob_genus)
+
+# Create the output directory if it doesn't exist
+if (!dir.exists("output_bat16S/figures")) {
+  dir.create("output_bat16S/figures")
+}
+
+# Save individual heatmaps and CSVs
+for (ext in c("jpg", "tiff", "pdf")) {
+  # Save plots
+  ggsave(
+    filename = paste0("output_bat16S/figures/Figure_family.", ext),
+    plot = grob_family,
+    width = 15, #10
+    height = 6, #5
+    dpi = 300,
+    limitsize = FALSE
+  )
+  ggsave(
+    filename = paste0("output_bat16S/figures/Figure_genus.", ext),
+    plot = grob_genus,
+    width = 15, #10
+    height = 6, #6
+    dpi = 300,
+    limitsize = FALSE
+  )
+  
+  # Save CSVs only during the first iteration (e.g., when ext is "jpg")
+  # to avoid writing the same data files multiple times
+  if (ext == "jpg") {
+    write.csv(family_matrix, "output_bat16S/family_matrix_processed.csv")
+    write.csv(genus_matrix, "output_bat16S/genus_matrix_processed.csv")
+  }
+}
