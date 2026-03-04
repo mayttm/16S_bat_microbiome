@@ -1,0 +1,61 @@
+#!/bin/bash
+#SBATCH --job-name=cutadapt_cleaning_160
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH -o ./logs/04.clean_cutadapt_160.%A_%a.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=10gb
+#SBATCH --account=epi
+#SBATCH --qos=epi-b
+#SBATCH --time=10:00:00
+
+pwd; hostname; date
+module load cutadapt/5.0
+module load gzip
+
+DIR="/blue/cmavian/thongthum.t/bat16s"
+INPUT_DIR="$DIR/out02_cutadapt"
+OUTPUT_DIR="$DIR/out03_cutadapt_160"
+
+# Create output directory if it does not exist
+# mkdir -p "$OUTPUT_DIR"
+
+# Read the list of input files
+myFiles=($(<inputFiles_2520.list))
+
+# Loop through each base name in inputFiles.list
+for base in "${myFiles[@]}"; do
+    full_path="$INPUT_DIR/${base}_L001_R1_001.fastq.gz"
+    
+    # Check if the expected file exists
+    if [[ ! -f "$full_path" ]]; then
+        echo "Skipping: File $full_path not found."
+        continue
+    fi
+    
+    echo "Processing file: $full_path"
+    
+    # Define output file names
+    temp_file="$OUTPUT_DIR/${base}_L001_R1_001.fastq"
+    output_file="$OUTPUT_DIR/${base}_L001_R1_001.fastq.gz"
+
+    # Decompress, clean, and recompress
+    gunzip -c "$full_path" | awk '
+        NR % 4 == 1 { header=$0; sub(/ rc$/, "", header) }  # Remove " rc" from header
+        NR % 4 == 2 { seq=$0 }                              # Capture sequence line
+        NR % 4 == 3 { plus=$0 }                             # Capture "+" separator line
+        NR % 4 == 0 { qual=$0 }                             # Capture quality line
+        
+        # Ensure all four lines are present and sequence length matches quality length
+        (seq != "" && plus ~ /^\+/ && qual != "" && length(seq) == length(qual)) {
+            print header "\n" seq "\n" plus "\n" qual
+        }
+    ' > "$temp_file"
+
+    # Recompress the cleaned file
+    gzip "$temp_file"
+
+    echo "Cleaned and compressed file saved as: $output_file"
+    echo "-----------------------------------"
+done
