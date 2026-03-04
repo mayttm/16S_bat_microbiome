@@ -1,0 +1,187 @@
+# ============================================================================ #
+## ---------------------------- ternary plot -------------------------------- ##
+## ------------------------ Predictor: Diet_type ---------------------------- ##
+# ============================================================================ #
+
+library(ggplot2)
+library(ggtern)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(RColorBrewer)
+library(patchwork) # For combining plots
+
+# 0. Define Diet Colors
+diet_colors <- c(
+  "Insect" = "#ff5e2b",
+  "Blood"  = "#ba0970",
+  "Fruit"  = "#2E8B57",
+  "Fish"   = "#303F9F"
+)
+
+# 1. Prepare Data (df_long)
+df_long <- df %>%
+  rownames_to_column("sample_id") %>%
+  pivot_longer(
+    cols = starts_with("d__Bacteria"),
+    names_to = "taxon",
+    values_to = "abundance"
+  ) %>%
+  filter(abundance > 0) %>%
+  mutate(
+    genus   = stringr::str_extract(taxon, "g__[^;|]+") %>% sub("^g__", "", .),
+    species = stringr::str_extract(taxon, "s__[^;|]+") %>% sub("^s__", "", .)
+  ) %>%
+  filter(!is.na(genus), genus != "") %>%
+  filter(!genus %in% c("Chloroplast", "Mitochondria")) %>%
+  filter(is.na(species) | !grepl("^uncultured", species, ignore.case = TRUE)) %>%
+  rename(taxonomic_group = Diet_type) %>%
+  select(sample_id, genus, species, abundance, taxonomic_group)
+
+# 2. Aggregate Data into Two Sets
+genus_summary_fish <- df_long %>%
+  filter(taxonomic_group %in% c("Insect", "Fruit", "Fish")) %>%
+  group_by(genus, taxonomic_group) %>%
+  summarise(total_abundance = sum(abundance), .groups = "drop") %>%
+  pivot_wider(names_from = taxonomic_group, values_from = total_abundance, values_fill = 0) %>%
+  mutate(total = Insect + Fruit + Fish, Fish_prop = Fish/total, Insect_prop = Insect/total, Fruit_prop = Fruit/total)
+
+genus_summary_blood <- df_long %>%
+  filter(taxonomic_group %in% c("Insect", "Fruit", "Blood")) %>%
+  group_by(genus, taxonomic_group) %>%
+  summarise(total_abundance = sum(abundance), .groups = "drop") %>%
+  pivot_wider(names_from = taxonomic_group, values_from = total_abundance, values_fill = 0) %>%
+  mutate(total = Insect + Fruit + Blood, Blood_prop = Blood/total, Insect_prop = Insect/total, Fruit_prop = Fruit/total)
+
+# 3. Identify Top Genera across BOTH sets for a consistent legend
+all_genera <- bind_rows(
+  select(genus_summary_fish, genus, total),
+  select(genus_summary_blood, genus, total)
+) %>%
+  group_by(genus) %>%
+  summarise(grand_total = sum(total)) %>%
+  arrange(desc(grand_total))
+
+top_genera_names <- all_genera %>%
+  slice_head(n = 20) %>%
+  pull(genus)
+
+# 4. Filter data to only top genera
+plot_data_fish <- genus_summary_fish %>% filter(genus %in% top_genera_names)
+plot_data_blood <- genus_summary_blood %>% filter(genus %in% top_genera_names)
+
+# 5. Generate Genus Color Palette
+n_taxa <- length(top_genera_names)
+genus_colors <- colorRampPalette(brewer.pal(9, "Set1"))(n_taxa)
+names(genus_colors) <- top_genera_names
+
+# --- Genus Color Assignments based on Family ---
+# Family: Aeromonadaceae (#AEC7E8)
+if("Aeromonas" %in% names(genus_colors)) genus_colors["Aeromonas"] <- "#AEC7E8"
+
+# Family: Bacillaceae (#ebeb36)
+if("Bacillus" %in% names(genus_colors)) genus_colors["Bacillus"] <- "#ebeb36"
+
+# Family: Bacteroidaceae (#24bfa3)
+if("Bacteroides" %in% names(genus_colors)) genus_colors["Bacteroides"] <- "#24bfa3"
+
+# Family: Burkholderiaceae (#9467bd)
+if("Burkholderia-Caballeronia-Paraburkholderia" %in% names(genus_colors)) genus_colors["Burkholderia-Caballeronia-Paraburkholderia"] <- "#d94ce6"
+if("Cupriavidus" %in% names(genus_colors)) genus_colors["Cupriavidus"] <- "#8a1184"
+
+# Family: Clostridiaceae (#FF7F0E)
+if("Clostridium_sensu_stricto_1"            %in% names(genus_colors)) genus_colors["Clostridium_sensu_stricto_1"] <- "#FF7F0E"
+
+# Family: Corynebacteriaceae (#FF4500)
+if("Corynebacterium"                        %in% names(genus_colors)) genus_colors["Corynebacterium"] <- "#FF4500"
+
+# Family: Enterobacteriaceae (#D62728)
+if("Escherichia-Shigella"                   %in% names(genus_colors)) genus_colors["Escherichia-Shigella"] <- "#D62728"
+
+# Family: Enterococcaceae (#17BECF)
+if("Enterococcus"                           %in% names(genus_colors)) genus_colors["Enterococcus"] <- "#54ecf7"
+
+# Family: Fusobacteriaceae (#E377C2)
+if("Cetobacterium"                          %in% names(genus_colors)) genus_colors["Cetobacterium"] <- "#ff63e2"
+
+# Family: Hafniaceae (#8C564B)
+if("Hafnia-Obesumbacterium"                 %in% names(genus_colors)) genus_colors["Hafnia-Obesumbacterium"] <- "#8C564B"
+if("Edwardsiella"                           %in% names(genus_colors)) genus_colors["Edwardsiella"] <- "#e39b8d"
+
+# Family: Helicobacteraceae (#2b7ced)
+if("Helicobacter"                           %in% names(genus_colors)) genus_colors["Helicobacter"] <- "#2b7ced"
+
+# Family: Morganellaceae (#FF9896)
+if("Morganella"                             %in% names(genus_colors)) genus_colors["Morganella"] <- "#FF9896"
+if("Proteus"                                %in% names(genus_colors)) genus_colors["Proteus"] <- "#FF9896"
+
+# Family: Mycoplasmataceae (#20a10a)
+if("Mycoplasma"                            %in% names(genus_colors)) genus_colors["Mycoplasma"] <- "#20a10a"
+
+# Family: Pasteurellaceae (#f5bb1d)
+if("Actinobacillus"                        %in% names(genus_colors)) genus_colors["Actinobacillus"] <- "#f5bb1d"
+
+# Family: Staphylococcaceae (#ad4b75)
+if("Staphylococcus"                        %in% names(genus_colors)) genus_colors["Staphylococcus"] <- "#ad4b75"
+
+# Family: Streptococcaceae (#8760d6)
+if("Lactococcus"                           %in% names(genus_colors)) genus_colors["Lactococcus"] <- "#8760d6"
+if("Streptococcus"                         %in% names(genus_colors)) genus_colors["Streptococcus"] <- "#4d1991"
+
+# 6. Create Plot 1: Fish
+ternary_fish <- ggtern(plot_data_fish,
+                       aes(x = Insect_prop, y = Fruit_prop, z = Fish_prop, fill = genus)) +
+  geom_point(size = 6, alpha = 0.8, shape = 21, color = "black") +
+  labs(x = "Insect", y = "Fruit", z = "Fish", fill = "Genus") +
+  theme_rgbw() +
+  theme(
+    axis.title = element_blank(), 
+    tern.axis.arrow.show = FALSE,
+    legend.position = "right",
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 11, face = "bold"),
+    tern.axis.title.L = element_text(color = diet_colors["Insect"], face="bold"),
+    tern.axis.title.T = element_text(color = diet_colors["Fruit"], face="bold"),
+    tern.axis.title.R = element_text(color = diet_colors["Fish"], face="bold")
+  ) +
+  scale_fill_manual(values = genus_colors, name = "Genus")
+
+print(ternary_fish)
+
+# 7. Create Plot 2: Blood
+ternary_blood <- ggtern(plot_data_blood,
+                        aes(x = Insect_prop, y = Fruit_prop, z = Blood_prop, fill = genus)) +
+  geom_point(size = 6, alpha = 0.8, shape = 21, color = "black") +
+  labs(x = "Insect", y = "Fruit", z = "Blood", fill = "Genus") +
+  theme_rgbw() +
+  theme(
+    axis.title = element_blank(), 
+    tern.axis.arrow.show = FALSE,
+    legend.position = "none", # Remove legend from this plot
+    tern.axis.title.L = element_text(color = diet_colors["Insect"], face="bold"),
+    tern.axis.title.T = element_text(color = diet_colors["Fruit"], face="bold"),
+    tern.axis.title.R = element_text(color = diet_colors["Blood"], face="bold")
+  ) +
+  scale_fill_manual(values = genus_colors, name = "Genus")
+
+print(ternary_blood)
+
+# 8. Combine plots with a shared legend using patchwork
+combined_ternary <- ternary_fish + ternary_blood + plot_layout(guides = 'collect')
+
+print(combined_ternary)
+
+# 9. Save
+out_dir = "output_bioproj_prim"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("ternary_combined_plots.", ext)),
+    plot = combined_ternary,
+    width = 14,
+    height = 6,
+    units = "in",
+    dpi = 300
+  )
+}
