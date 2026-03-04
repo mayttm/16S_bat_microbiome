@@ -1,1 +1,35 @@
+#!/bin/bash
+
+# Define directories
+
+#source_dir="/blue/cmavian/batcov/16s/q2_florida_bats/justFQ_merged"
+#target_dir="/blue/cmavian/thongthum.t/FL_bats/input"
+
+source_dir="/orange/cmavian/data/batcoremicrobiome"
+target_dir="/blue/cmavian/thongthum.t/v4-1-6136/v4-1"
+biosample_list="/blue/cmavian/thongthum.t/reads_list/V4-1-6136"  # The file containing the list of biosample numbers
+
+# Loop through each biosample in the list
+while IFS= read -r biosample; do
+    # Construct the directory name with the format "{biosample}_reads"
+    dirname="${biosample}_reads"
+    echo "Checking for directory: $source_dir/$dirname"  # Debug output
+
+    # Check if the directory exists in the source directory
+    if [ -d "$source_dir/$dirname" ]; then
+        # Construct the inner directory path
+        inner_dir="$source_dir/$dirname/$biosample"
+        
+        # Check if the inner directory exists
+        if [ -d "$inner_dir" ]; then
+            # Copy the inner directory to the target directory
+            cp -r "$inner_dir" "$target_dir/"
+            echo "Copied $inner_dir to $target_dir"
+        else
+            echo "Inner directory $inner_dir not found"
+        fi
+    else
+        echo "Directory $dirname not found in $source_dir"
+    fi
+done < "$biosample_list"
 
