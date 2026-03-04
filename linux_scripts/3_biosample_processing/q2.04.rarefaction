@@ -1,0 +1,38 @@
+#!/bin/bash
+#SBATCH --job-name=Q2.03_160_Rarefaction
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH --output=logs/q2.part03.phyloALphaRar_20250714.%j.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=30gb
+#SBATCH --account=epi
+#SBATCH --qos=epi
+#SBATCH --time=96:00:00
+
+pwd; hostname; date
+
+metadata="/blue/cmavian/thongthum.t/bat16s/outq2_160/metadata_160_20250714.txt"
+export TMPDIR=/blue/cmavian/thongthum.t/bat16s/tmpdir
+mkdir -p $TMPDIR
+
+module load qiime2/2024.10
+
+#qiime phylogeny align-to-tree-mafft-fasttree \
+#    --i-sequences step.02.b.deblur.repseqs-filtered.qza \
+#    --o-alignment step.03.a.deblur.aligned.repseqs.qza \
+#    --o-masked-alignment step.03.a.deblur.aligned.masked.repseqs.qza \
+#    --o-tree tree.unrooted.qza \
+#    --o-rooted-tree tree.rooted.qza
+
+qiime diversity alpha-rarefaction \
+    --i-table step.02.b.deblur.table-filtered.qza \
+    --p-max-depth 6000 \
+    --p-min-depth 1 \
+    --i-phylogeny tree.rooted.qza \
+    --m-metadata-file metadata_160_20250714.txt \
+    --p-metrics observed_features --p-metrics shannon --p-metrics chao1 --p-metrics faith_pd \
+    --output-dir rarefactionCurves \
+    --verbose
+
+date
