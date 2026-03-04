@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --job-name CutAdapt_v3v4
+#SBATCH --mail-type ALL
+#SBATCH --mail-user thongthum.t@ufl.edu
+#SBATCH -o ./logs/02.cutadapt.%A_%a_20250716.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem-per-cpu=10gb
+#SBATCH --account=epi
+#SBATCH --qos=epi-b
+#SBATCH --time=24:00:00
+
+pwd; hostname; date
+module load cutadapt/5.0
+
+#mkdir -p out02_cutadapt
+
+# Read the list of input files
+myFiles=($(<FL_bats.list))
+
+# Define inner-most primers (v4_1)
+#FWD_PRIMER="GTGCCAGCMGCCGCGGTAA"
+#REV_PRIMER="GGACTACHVGGGTWTCTAAT"
+
+# Define inner-most primers (v3v4_1)
+FWD_PRIMER="CCTACGGGNGGCWGCAG"
+REV_PRIMER="GGACTACHVGGGTWTCTAAT"
+
+# Create output directory if it doesn't exist
+#mkdir -p out02_cutadapt_v3v4
+
+# Loop through each file in myFiles list
+for indFile in "${myFiles[@]}"; do
+    echo "Processing: ${indFile}"
+
+    cutadapt -a "${FWD_PRIMER}...${REV_PRIMER}" --revcomp --action=trim --cores=2 -e 0.1 --minimum-length 200 -q 20 \
+      -o "out02_cutadapt_v3v4/${indFile}_L001_R1_001.fastq.gz" \
+      "./out01_vsearch/${indFile}.merged.fastq.gz"
+done
+
+echo "Processing complete."
+date
+
+#myFiles=($(<inputFiles.list))
+#indFile=${myFiles[${SLURM_ARRAY_TASK_ID}]}
+
+##inner-most primers (v4_2):
+#16S V4-1 515F: GTGCCAGCMGCCGCGGTAA
+#16S V4-1 806R: GGACTACHVGGGTWTCTAAT
+
+# cutadapt -a GTGCCAGCMGCCGCGGTAA...GGACTACHVGGGTWTCTAAT --revcomp --action=trim \
+#  --cores=2 \
+#  -o out02_cutadapt/${indFile}_L001_R1_001.fastq.gz \
+#  ./out01_vsearch/${indFile}.merged.fastq.gz
+
+#date
+
+####note: SBATCH --partition=hpg-default 
