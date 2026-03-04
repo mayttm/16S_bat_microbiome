@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=conqur_160_comb_diet2
+#SBATCH --output=logs/q2.part07.4.1.conqur_comb_20260303.%j.out
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=thongthum.t@ufl.edu
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=80gb
+#SBATCH --account=epi
+#SBATCH --qos=epi-b
+#SBATCH --time=96:00:00
+
+pwd; hostname; date
+
+# Load R module
+module load R/4.4
+
+# Set personal R library
+export R_LIBS_USER=/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4
+
+# Run R script
+Rscript conqur_comb_diet2_v2.R
