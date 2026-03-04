@@ -1,0 +1,31 @@
+
+# -------------------------FIGURE 3 PANEL ARRANGEMENT ------------------------ #
+
+library(ggpubr)
+
+# 2. Stack everything vertically (A, then B, then the bottom_row)
+abun_clr_ternary_panel <- ggarrange(
+  abundance_genus_avg, 
+  CLR_combined_genus, 
+  combined_ternary,
+  labels = c("A", "B", "C"),
+  ncol = 1,
+  nrow = 3
+)
+
+print(abun_clr_ternary_panel)
+
+out_dir = "output_bioproj_prim/_FIGURES"
+#out_dir = "output_prim_bioproj"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("fig3_abun_clr_ternary_genus.", ext)),
+    plot = abun_clr_ternary_panel,
+    width = 14, 
+    height = 18, 
+    units = "in", 
+    dpi = 300
+  )
+}
