@@ -1,0 +1,37 @@
+#!/bin/bash
+#SBATCH --job-name Renaming_SEreads
+#SBATCH --mail-type ALL
+#SBATCH --mail-user thongthum.t@ufl.edu
+#SBATCH -o ./logs/01.renaming.%A_%a_5871.out
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=4gb
+#SBATCH --account=epi
+#SBATCH --qos=epi-b
+#SBATCH --time=4:00:00
+
+pwd; hostname; date
+module load vsearch/2.30.0
+
+#mkdir -p out01_vsearch
+
+inpDir=/blue/cmavian/thongthum.t/v3-v4-4-5871/v3-v4-4/input/
+
+myFiles=($(<inputFiles_5871-se.list))
+indFile=${myFiles[${SLURM_ARRAY_TASK_ID}]}
+
+#16S V4-1 515F: GTGCCAGCMGCCGCGGTAA
+#16S V4-1 806R: GGACTACHVGGGTWTCTAAT
+
+set -e
+
+# Loop through each file in myFiles list 
+for indFile in "${myFiles[@]}"; do
+    echo "Processing: ${indFile}"
+
+    # Copy and rename single-end reads
+    cat ${inpDir}/${indFile}_L001_R1_001.fastq.gz > ./out01_vsearch/${indFile}.merged.fastq.gz
+
+done
+
+date
