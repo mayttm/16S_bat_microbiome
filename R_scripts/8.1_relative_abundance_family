@@ -1,0 +1,317 @@
+################################################################################
+### --------------- COMPOSITE FIGURE 3: RELATIVE ABUNDANCE ----------------- ###
+################################################################################
+
+library(tidyverse)
+library(RColorBrewer)
+
+# Load data
+#setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+data <- read_csv("output/df_taxa_metadata_160.csv")
+
+# ------------------- A. CLEANING AND FILTERING
+# Extract abundance columns for checking
+tax_cols_check <- grep("^d__", names(data), value = TRUE)
+abundance_check <- data[, tax_cols_check]
+
+# Filter 1: Remove exact duplicate rows (Technical error check)
+is_not_dup <- !duplicated(abundance_check)
+data <- data[is_not_dup, ]
+print(paste("Removed", sum(!is_not_dup), "exact duplicate samples."))
+
+# Re-extract abundance and metadata after duplicate removal
+tax_cols <- grep("^d__", names(data), value = TRUE)
+abundance <- data[, tax_cols]
+sample_ids <- data$index
+diet_type <- data$Diet_type
+species_name <- data$taxonomic_species
+animals <- data$Common.name_Species
+bioproject <- data$bioproject
+
+# Extract family names (Corrected for spaces)
+family_names <- sapply(tax_cols, function(col) {
+  parts <- unlist(strsplit(col, ";"))
+  parts <- trimws(parts)
+  f_part <- parts[grep("^f__", parts)]
+  if (length(f_part) == 0) return("Unclassified")
+  family <- sub("^f__", "", f_part)
+  if (family == "") return("Unclassified")
+  return(family)
+})
+
+# Aggregate to family level
+abundance_t <- t(abundance)
+abundance_family <- rowsum(abundance_t, group = family_names, reorder = FALSE)
+
+# Filter 2: Remove Contaminants (Chloroplast/Mitochondria)
+abundance_family <- abundance_family[rownames(abundance_family) != "Chloroplast", ]
+abundance_family <- abundance_family[rownames(abundance_family) != "Mitochondria", ]
+abundance_family <- t(abundance_family)
+rownames(abundance_family) <- sample_ids
+
+# Convert to dataframe
+abundance_family_df <- as.data.frame(abundance_family)
+
+# Remove "Unclassified" column if present
+if ("Unclassified" %in% colnames(abundance_family_df)) {
+  abundance_family_df$Unclassified <- NULL 
+}
+
+# Filter 3: CRITICAL READ DEPTH FILTER (Fixes the "Flat Block" issue)
+
+# Calculate total reads per sample
+row_sums <- rowSums(abundance_family_df)
+
+# Print summary to see distribution before filtering
+print("Read count summary before filtering:")
+print(summary(row_sums))
+
+min_reads <- 5000
+valid_rows <- row_sums >= min_reads
+
+# Print report
+print(paste("Total samples:", length(row_sums)))
+print(paste("Valid samples (>= ", min_reads, " reads):", sum(valid_rows)))
+print(paste("Discarded samples (< ", min_reads, " reads):", sum(!valid_rows)))
+
+if(sum(valid_rows) == 0) {
+  stop("Error: All samples were filtered out! Try lowering 'min_reads' or check your data.")
+}
+
+# Apply the filter to Data and Metadata
+abundance_family_df <- abundance_family_df[valid_rows, ]
+diet_type <- diet_type[valid_rows]
+species_name <- species_name[valid_rows]
+animals <- animals[valid_rows]
+sample_ids <- sample_ids[valid_rows] 
+bioproject <- bioproject[valid_rows]
+
+# ----------- B. NORMALIZATION AND PREPARATION
+
+# Normalize to relative abundance (%)
+abundance_family_rel <- as.data.frame(abundance_family_df / rowSums(abundance_family_df) * 100)
+
+# Add metadata back to the relative abundance dataframe
+abundance_family_rel$Sample <- sample_ids
+abundance_family_rel$Diet_type <- diet_type
+abundance_family_rel$Species <- species_name
+abundance_family_rel$Animal <- animals
+abundance_family_rel$BioProject <- bioproject
+
+# Identify numeric columns (the bacteria)
+bacteria_cols <- sapply(abundance_family_rel, is.numeric)
+
+# Get top 20 families based on overall abundance
+overall_top <- colSums(abundance_family_rel[, bacteria_cols])
+top_families <- names(sort(overall_top, decreasing = TRUE)[1:20])
+print(top_families)
+
+# Calculate 'Other' category
+top_data <- abundance_family_rel[, top_families, drop = FALSE]
+other <- 100 - rowSums(top_data)
+final_data <- cbind(top_data, Other = other)
+
+# Add metadata to final object
+final_data$Sample <- abundance_family_rel$Sample
+final_data$Diet_type <- factor(abundance_family_rel$Diet_type,
+                               levels = c("Fish", "Insect", "Fruit", "Blood"))
+final_data$Species <- abundance_family_rel$Species
+final_data$Animal <- abundance_family_rel$Animal
+final_data$BioProject <- bioproject 
+
+# ------------------- C. EXPORT FULL SUMMARY (ALL FAMILIES) -------------------
+library(dplyr)
+library(tidyr)
+library(readr)
+
+# 1. Identify all bacterial family columns in the full relative abundance dataset
+# We exclude the metadata columns we added earlier
+metadata_cols <- c("Sample", "Diet_type", "Species", "Animal", "BioProject")
+all_bacteria_cols <- setdiff(names(abundance_family_rel), metadata_cols)
+
+# 2. Group by Diet_type and calculate the mean for ALL families (not just top 20)
+full_summary_table <- abundance_family_rel %>%
+  select(Diet_type, all_of(all_bacteria_cols)) %>%
+  group_by(Diet_type) %>%
+  summarise(across(everything(), mean, na.rm = TRUE)) %>%
+  ungroup()
+
+# 3. Pivot to long format (Diet_type, Bacterial_Family, Average_Relative_Abundance)
+full_long_summary <- full_summary_table %>%
+  pivot_longer(
+    cols = -Diet_type, 
+    names_to = "Bacterial_Family", 
+    values_to = "Average_Relative_Abundance"
+  )
+
+# 4. Filter for > 1% abundance
+# This will capture Top 20 families AND any "Other" families that might exceed 1% 
+# in specific diet groups even if they weren't in the global Top 20.
+full_long_summary_filtered <- full_long_summary %>%
+  filter(Average_Relative_Abundance > 1) %>%
+  arrange(Diet_type, desc(Average_Relative_Abundance))
+
+# 5. Export the table
+write_csv(full_long_summary_filtered, "output_bioproj_prim/Average_Rel_Abundance_Families.csv")
+
+# Print check
+print(head(full_long_summary_filtered))
+
+# ------------------------- D. PLOTTING SETUP ----------------------------------
+
+# Pivot to long format
+
+long_data <- final_data %>%
+  pivot_longer(cols = -c(Sample, Diet_type, Species, Animal, BioProject),
+               names_to = "Family", values_to = "Abundance") %>%
+  mutate(Family = factor(Family, levels = c(top_families, "Other")))
+
+# Define Palettes
+bright_families <- c("Aeromonadaceae", "Bacillaceae", "Bacteroidaceae", 
+                     "Burkholderiaceae", "Chlamydiaceae", "Clostridiaceae", 
+                     "Enterobacteriaceae", "Enterococcaceae", 
+                     "Fusobacteriaceae", "Hafniaceae", "Helicobacteraceae", 
+                     "Moraxellaceae", "Morganellaceae", "Mycoplasmataceae", 
+                     "Pasteurellaceae", "Peptostreptococcaceae", "Staphylococcaceae", 
+                     "Streptococcaceae", "Yersiniaceae")
+
+n_bright <- sum(top_families %in% bright_families)
+n_subtle <- length(top_families) - n_bright
+base_colors <- c(brewer.pal(8, "Set1"), brewer.pal(8, "Set1"))
+bright_palette <- colorRampPalette(base_colors)(n_bright)
+subtle_palette <- colorRampPalette(c("#CDFADB", "#F0C1E1", "#A5B68D", "#F4DEB3",
+                                     "#C5D3E8", "#CBE2B5", "#E8C5E5", "#D6DAC8"))(n_subtle)
+
+# Assign colors
+family_colors <- c()
+bright_idx <- 1
+subtle_idx <- 1
+for (fam in top_families) {
+  if (fam %in% bright_families) {
+    family_colors[fam] <- bright_palette[bright_idx]
+    bright_idx <- bright_idx + 1
+  } else {
+    family_colors[fam] <- subtle_palette[subtle_idx]
+    subtle_idx <- subtle_idx + 1
+  }
+}
+
+# ----------------- color assignment
+family_colors["Other"] <- "grey70"
+
+# Genus: Escherichia-Shigella (#D62728) -> Family: Enterobacteriaceae
+if("Enterobacteriaceae" %in% names(family_colors)) family_colors["Enterobacteriaceae"] <- "#D62728"
+if("Clostridiaceae" %in% names(family_colors)) family_colors["Clostridiaceae"] <- "#FF7F0E"
+if("Streptococcaceae" %in% names(family_colors)) family_colors["Streptococcaceae"] <- "#8760d6"
+if("Enterococcaceae" %in% names(family_colors)) family_colors["Enterococcaceae"] <- "#17BECF"
+if("Helicobacteraceae" %in% names(family_colors)) family_colors["Helicobacteraceae"] <- "#2b7ced"
+if("Mycoplasmataceae" %in% names(family_colors)) family_colors["Mycoplasmataceae"] <- "#20a10a"
+if("Hafniaceae" %in% names(family_colors)) family_colors["Hafniaceae"] <- "#8C564B"
+if("Aeromonadaceae" %in% names(family_colors)) family_colors["Aeromonadaceae"] <- "#AEC7E8"
+if("Morganellaceae" %in% names(family_colors)) family_colors["Morganellaceae"] <- "#FF9896"
+if("Bacillaceae" %in% names(family_colors)) family_colors["Bacillaceae"] <- "#ebeb36"
+if("Staphylococcaceae" %in% names(family_colors)) family_colors["Staphylococcaceae"] <- "#ad4b75"
+if("Fusobacteriaceae" %in% names(family_colors)) family_colors["Fusobacteriaceae"] <- "#E377C2"
+if("Pasteurellaceae" %in% names(family_colors)) family_colors["Pasteurellaceae"] <- "#f5bb1d"
+if("Corynebacteriaceae" %in% names(family_colors)) family_colors["Corynebacteriaceae"] <- "#FF4500"
+if("Lachnospiraceae" %in% names(family_colors)) family_colors["Lachnospiraceae"] <- "#32CD32"
+if("Leuconostocaceae" %in% names(family_colors)) family_colors["Leuconostocaceae"] <- "#C71585"
+if("Orbaceae" %in% names(family_colors)) family_colors["Orbaceae"] <- "#b6afed"
+if("Yersiniaceae" %in% names(family_colors)) family_colors["Yersiniaceae"] <- "#acad0c"
+if("Peptostreptococcaceae" %in% names(family_colors)) family_colors["Peptostreptococcaceae"] <- "#edd9af"
+if("Bacteroidaceae" %in% names(family_colors)) family_colors["Bacteroidaceae"] <- "#24bfa3"
+if("Burkholderiaceae" %in% names(family_colors)) family_colors["Burkholderiaceae"] <- "#9467bd"
+if("Chlamydiaceae" %in% names(family_colors)) family_colors["Chlamydiaceae"] <- "#8c564b"
+if("Moraxellaceae" %in% names(family_colors)) family_colors["Moraxellaceae"] <- "#e377c2" 
+
+# ----------------- D. GENERATE PLOT
+
+abundance_fam_all <- ggplot(long_data, aes(x = Sample, y = Abundance, fill = Family)) +
+  geom_col(width = 1) +
+  facet_grid(. ~ Diet_type, scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = family_colors) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.margin = ggplot2::margin(t = 20, r = 10, b = 10, l = 10, unit = "pt"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "right",
+    strip.background = element_blank(),
+    strip.text = element_text(size = 12, face = "bold")
+  ) +
+  labs(y = "Relative Abundance (%)", fill = "Family") +
+  guides(fill = guide_legend(ncol = 1))
+
+print(abundance_fam_all)
+
+# Save
+# (Make sure 'out_dir' is defined in your environment, or replace with a path string)
+if (!exists("out_dir")) { out_dir <- "output" } 
+if (!dir.exists(out_dir)) { dir.create(out_dir) }
+
+out_dir <- "output_bioproj_prim"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("Relative_abundance_family_all.", ext)),
+    plot = abundance_fam_all,
+    width = 20,
+    height = 10,
+    units = "in",
+    dpi = 300
+  )
+}
+
+## ---------------- SUPPLEMENTAL FIG: AVERAGE ABUNDANCE (FAMILY) ---------------
+
+long_data_summary <- long_data %>%
+  group_by(Diet_type, BioProject, Family) %>%
+  summarise(Abundance = mean(Abundance, na.rm = TRUE), .groups = "drop")
+
+# Create plot
+abundance_fam_avg <- ggplot(long_data_summary, aes(x = BioProject, y = Abundance, fill = Family)) +
+  geom_col(width = 0.9) + # Slight gap between bars looks cleaner
+  # Facet by Diet_type (the "Big Column")
+  facet_grid(. ~ Diet_type, scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = family_colors) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.margin = ggplot2::margin(t = 20, r = 10, b = 10, l = 10, unit = "pt"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    # Turned axis text back on so you can see the BioProject IDs
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 8), 
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_line(),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "right",
+    strip.background = element_rect(fill = "grey90", color = NA), # Optional: makes headers distinct
+    strip.text = element_text(size = 12, face = "bold")
+  ) +
+  labs(y = "Mean Relative Abundance (%)", fill = "Family") +
+  guides(fill = guide_legend(ncol = 1))
+
+print(abundance_fam_avg)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("Relative_abundance_family_avg.", ext)),
+    plot = abundance_fam_avg,
+    width = 10, 
+    height = 8, 
+    units = "in", 
+    dpi = 300
+  )
+}
