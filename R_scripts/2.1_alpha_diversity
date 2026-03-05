@@ -1,0 +1,308 @@
+################################################################################
+### --------------------- alpha and beta diversity ------------------------- ###
+
+#install.packages(c("vegan", "ggplot2", "dplyr", "tidyr", "ggpubr"))
+#install.packages("picante")
+# Load necessary libraries
+library(vegan)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(readr)
+library(picante) 
+library(ape) 
+
+# ------------------ 0. DATA LOADING AND PREPARATION ---------------------------
+
+#setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/250")
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/250")
+df_input <- read_csv("output/df_taxa_metadata_250.csv")
+
+# We need to separate the community matrix (abundance data) from the metadata
+# Based on your previous script, taxa columns start with "d__Bacteria"
+# We extract columns that contain taxa abundance
+community_matrix <- df_input %>%
+  select(starts_with("d__Bacteria"))
+
+# Extract metadata (everything that isn't a taxa column)
+metadata_sub <- df_input %>%
+  select(-starts_with("d__Bacteria"))
+
+# Ensure the row names match for vegan
+rownames(community_matrix) <- df_input$index # Assuming 'index' is the sample_id column created earlier
+rownames(metadata_sub) <- df_input$index
+
+# Optional: Rarefaction (Normalizing sequencing depth)
+set.seed(1000)
+min_depth <- min(rowSums(community_matrix))
+community_matrix <- rrarefy(community_matrix, min_depth)
+
+table(metadata_sub$Diet_type)
+
+diet_colors <- c(
+  "Insect" = "#ff5e2b",
+  "Blood"  = "#ba0970",
+  "Fruit"  = "#2E8B57",
+  "Fish"   = "#303F9F")
+
+
+table(metadata_sub$cw_diet1)
+
+cw_diet_colors <- c(
+  "Wild_Insect" = "#ff5e2b", 
+  "Captive_Insect" = "#e37f05", 
+  "Wild_probably_Insect" = "#fa8246", 
+  "Captive_probably_Insect" = "#fcb644",
+  "Wild_Fruit" = "#2E8B57", 
+  "Wild_probably_Fruit" = "#1b5e3a", 
+  "Captive_probably_Fruit" = "#80e35f",
+  "Wild_Blood" = "#ba0970", 
+  "Wild_probably_Blood" = "#e329da", 
+  "Wild_probably_Fish" = "#303F9F"
+)
+
+#------------------------- 1. DATA PREPARATION ---------------------------------
+
+# (Assuming df_input is already loaded or created as per previous steps)
+df_input <- read_csv("output/df_taxa_metadata_250.csv")
+
+# Ensure cw_diet1 exists
+if(!"cw_diet1" %in% colnames(df_input)) {
+  df_input <- df_input %>%
+    mutate(cw_diet1 = paste(captive_wild, Diet_type, sep = "_"))
+}
+
+community_matrix <- df_input %>% select(starts_with("d__Bacteria"))
+metadata_sub <- df_input %>% select(-starts_with("d__Bacteria"))
+
+################################################################################
+## ----------------- ALPHA, BETA, CONFUSION MATRIX: DIET1 ------------------- ##
+################################################################################
+
+library(tidyverse)
+library(vegan)
+library(picante)
+library(rstatix)
+library(ggpubr)
+library(ape) 
+library(rstatix)
+
+set.seed(1000)
+tree_file <- rtree(ncol(community_matrix), tip.label = colnames(community_matrix))
+
+shannon  <- diversity(community_matrix, index = "shannon")
+observed <- specnumber(community_matrix)
+simpson <- diversity(community_matrix, index = "simpson")
+#pd_result <- pd(community_matrix, tree_file, include.root = FALSE)
+
+# Calculate Indices
+alpha_div <- data.frame(
+  Shannon = shannon,
+  Simpson = simpson, 
+  Observed = observed
+)
+
+# Merge back with metadata
+alpha_plot_data <- cbind(alpha_div, metadata_sub)
+
+# ============================================================================ #
+# ------------------ NOT INCLUDED: ALHA DIVERSITY PANEL ---------------------- #
+# ------------------------------ Predictor: DIET1 ---------------------------- #
+# ============================================================================ #
+
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+
+# Note: Ensure you have defined 'diet_colors' before running this function.
+# Example: diet_colors <- c("red", "blue", "green", "orange") 
+
+plot_alpha_diet <- function(data, y_metric, title) {
+  
+  # 1. PREPARE DATA & CALCULATE DUNN'S TEST
+  # Create a clean dataframe for calculation
+  stats_data <- data %>%
+    select(Diet_type, all_of(y_metric)) %>%
+    filter(!is.na(.data[[y_metric]]), !is.na(Diet_type))
+  
+  # Run Dunn's Test (No positions yet)
+  dunn_stats <- stats_data %>%
+    dunn_test(as.formula(paste(y_metric, "~ Diet_type")), p.adjust.method = "fdr") %>%
+    add_significance()
+  
+  # 2. MANUALLY CALCULATE Y-POSITIONS FOR NEAT STACKING
+  # This guarantees consistent spacing for ALL brackets (Sig + NS)
+  if(nrow(dunn_stats) > 0) {
+    # Find the maximum value in the plot to know where to start drawing
+    max_y <- max(stats_data[[y_metric]], na.rm = TRUE)
+    
+    # Define a step size (e.g., 10% of the data range)
+    y_range <- max_y - min(stats_data[[y_metric]], na.rm = TRUE)
+    step_size <- y_range * 0.05
+    
+    # Assign y.position incrementally for every comparison in the list
+    # The first bracket goes at max_y + step, the second at max_y + 2*step, etc.
+    dunn_stats$y.position <- max_y + (1:nrow(dunn_stats)) * step_size
+  }
+  
+  # 3. Calculate global p-value (Kruskal-Wallis)
+  kruskal_p <- kruskal_test(stats_data, as.formula(paste(y_metric, "~ Diet_type")))$p
+  subtitle_text <- paste0("Kruskal-Wallis, p = ", sprintf("%.3f", kruskal_p))
+  
+  # 4. Plot Base
+  p <- ggplot(data, aes(x = Diet_type, y = .data[[y_metric]], fill = Diet_type)) +
+    geom_boxplot(alpha = 0.8, outlier.shape = NA) +
+    geom_jitter(width = 0.1, size = 0.8, alpha = 0.4, color = "black") +
+    theme_bw() +
+    labs(title = title, subtitle = subtitle_text, x = "Diet Group", y = y_metric) +
+    scale_fill_manual(values = diet_colors) +
+    
+    # --- LAYER A: NON-SIGNIFICANT (RED) ---
+    stat_pvalue_manual(
+      dunn_stats %>% filter(p.adj > 0.05),
+      label = "p.adj.signif",
+      color = "red",
+      tip.length = 0.005,
+      vjust = 0.5,
+      remove.bracket = FALSE
+    ) +
+    
+    # --- LAYER B: SIGNIFICANT (BLACK) ---
+    stat_pvalue_manual(
+      dunn_stats %>% filter(p.adj <= 0.05),
+      label = "p.adj.signif",
+      color = "black",
+      tip.length = 0.005,
+      vjust = 0.5,
+      remove.bracket = FALSE
+    ) +
+    
+    # Theme adjustments
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+      plot.subtitle = element_text(hjust = 0.5, size = 10, face = "italic"),
+      axis.title.x = element_text(size = 10, face = "bold"),
+      axis.title.y = element_text(size = 10, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10, color = "black"),
+      axis.text.y = element_text(size = 10)
+    )
+  
+  return(p)
+}
+
+p1 <- plot_alpha_diet(alpha_plot_data, "Shannon", "Shannon Entropy Index")
+p2 <- plot_alpha_diet(alpha_plot_data, "Simpson", "Simpson's Diversity Index")
+p3 <- plot_alpha_diet(alpha_plot_data, "Observed", "Observed Richness")
+
+# Combine and Save
+alpha_plots_diet1 <- ggarrange(p1, p2, p3, ncol = 3, nrow = 1)
+print(alpha_plots_diet1)
+
+out_dir <- "output_bioproj_prim"
+dir.create("output_bioproj_prim", showWarnings = FALSE, recursive = TRUE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("alpha_diet1_sig_nonsig.", ext)),
+    plot = alpha_plots_diet1,
+    width = 13,
+    height = 8,
+    units = "in",
+    dpi = 300,
+    bg = "white"
+  )
+}
+
+# ============================================================================ #
+# ------------------ 1.1) ALHA DIVERSITY PANEL (SIG ONLY) -------------------- #
+# ------------------------------ Predictor: DIET1 ---------------------------- #
+# ============================================================================ #
+
+plot_alpha_sig_only <- function(data, y_metric, title) {
+  
+  # 1. CALCULATE DUNN'S TEST
+  # We calculate the statistics first (without positions)
+  stat.test <- data %>%
+    dunn_test(as.formula(paste(y_metric, "~ Diet_type")), p.adjust.method = "fdr") %>%
+    add_significance()
+  
+  # 2. FILTER FOR SIGNIFICANT PAIRS
+  sig_stats <- stat.test %>% filter(p.adj <= 0.05)
+  
+  # 3. MANUALLY CALCULATE Y-POSITIONS FOR NEAT STACKING
+  # This replaces add_xy_position to ensure tight, gap-free stacking
+  if(nrow(sig_stats) > 0) {
+    
+    # Find the maximum value in the plot to know where to start drawing
+    max_y <- max(data[[y_metric]], na.rm = TRUE)
+    
+    # Define a step size (e.g., 10% of the data range)
+    y_range <- max_y - min(data[[y_metric]], na.rm = TRUE)
+    step_size <- y_range * 0.05
+    
+    # Assign y.position incrementally
+    # The first significant bracket goes at max_y + step
+    # The second goes at max_y + 2*step, etc.
+    sig_stats$y.position <- max_y + (1:nrow(sig_stats)) * step_size
+  }
+  
+  # 4. GENERATE PLOT
+  p <- ggplot(data, aes(x = Diet_type, y = .data[[y_metric]], fill = Diet_type)) +
+    
+    # Boxplot
+    geom_boxplot(alpha = 0.8, outlier.shape = NA) +
+    
+    # Add points
+    geom_jitter(width = 0.2, size = 1.0, alpha = 0.6, color = "black") +
+    
+    theme_bw() +
+    labs(title = title, x = "Diet Group", y = y_metric) +
+    scale_fill_manual(values = diet_colors) +
+    
+    # 5. ADD BRACKETS
+    # We pass the manually calculated sig_stats
+    stat_pvalue_manual(
+      sig_stats,
+      label = "p.adj.signif",    
+      tip.length = 0.01,
+      hide.ns = TRUE,
+      vjust = 0.5
+    ) +
+    
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      axis.title.x = element_text(size = 12, face = "bold"),
+      axis.title.y = element_text(size = 12, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10, color = "black"),
+      axis.text.y = element_text(size = 10)
+    )
+  
+  return(p)
+}
+
+# Generate Plots
+p1_sig <- plot_alpha_sig_only(alpha_plot_data, "Shannon", "Shannon Diversity")
+p2_sig <- plot_alpha_sig_only(alpha_plot_data, "Simpson", "Simpson's Diversity Index")
+p3_sig <- plot_alpha_sig_only(alpha_plot_data, "Observed", "Observed Richness")
+
+# Combine
+alpha_plots_diet1_sig <- ggarrange(p1_sig, p2_sig, p3_sig, ncol = 3, nrow = 1)
+print(alpha_plots_diet1_sig)
+
+out_dir <- "output_bioproj_prim"
+dir.create("output_bioproj_prim", showWarnings = FALSE, recursive = TRUE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("alpha_plots_diet1_sig.", ext)),
+    plot = alpha_plots_diet1_sig,
+    width = 14, 
+    height = 10, 
+    units = "in", 
+    dpi = 300,
+    bg = "white"
+  )
+}
