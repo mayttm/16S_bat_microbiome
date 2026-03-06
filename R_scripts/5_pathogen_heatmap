@@ -25,21 +25,9 @@ extract_taxonomic_info <- function(column_name) {
   return(list(family = family, genus = genus))
 }
 
-
 process_csv_file <- function(input_file, output_file) {
   # Read the CSV file
   df <- read_csv(input_file, show_col_types = FALSE)
-  
-  # Remove outliers if present
-  #outliers <- c("K058683-R", "K058706-R", "K058789-R", "K058689-R", 
-  #              "K058814-R", "K058785-R", "K058700-R", "K058796-R", 
-  #              "K058824-R", "K058810-R", "K058694-R")
-  
-  # Check if outliers exist in the data
-  #if (any(outliers %in% df$index)) {
-  #  df <- df[!df$index %in% outliers, ]
-  #  cat(sprintf("Removed %d outlier samples\n", sum(outliers %in% df$index)))
-  #}
   
   taxonomic_cols <- names(df)[grepl("^d__(Bacteria|Archaea);", names(df))]
   cat(sprintf("Found %d taxonomic columns\n", length(taxonomic_cols)))
@@ -154,11 +142,6 @@ process_target_families <- function(input_file, output_file, target_families = N
   
   # Read the CSV file
   df <- read_csv(input_file, show_col_types = FALSE)
-  
-  # Remove outliers
-  #outliers <- c("K058683-R", "K058706-R", "K058789-R", "K058689-R", 
-  #              "K058814-R", "K058785-R", "K058700-R", "K058796-R", 
-  #              "K058824-R", "K058810-R", "K058694-R")
   
   #if (any(outliers %in% df$index)) {
   #  df <- df[!df$index %in% outliers, ]}
@@ -373,42 +356,13 @@ genus_matrix <- animal_data %>%
 
 genus_matrix <- genus_matrix[, !duplicated(as.data.frame(t(genus_matrix))), drop = FALSE]
 
-### ------ Top 10 Abundance Cut Off 
-
-# 1. LOAD ORIGINAL DATA
-#all_data <- read.csv("output_bat16S/heatmap_data.csv", stringsAsFactors = FALSE)
-
-# 2. IDENTIFY TOP 10 FAMILIES (By Total Reads)
-#top_families <- all_data %>%
-#  group_by(Family) %>%
-#  summarise(Total_Reads = sum(Reads, na.rm = TRUE)) %>%
-#  arrange(desc(Total_Reads)) %>%
-#  slice_head(n = 10) %>%
-#  pull(Family)
-
-# 3. IDENTIFY TOP 10 GENERA (By Total Reads)
-#top_genera <- all_data %>%
-#  group_by(Genus) %>%
-#  summarise(Total_Reads = sum(Reads, na.rm = TRUE)) %>%
-#  arrange(desc(Total_Reads)) %>%
-#  slice_head(n = 10) %>%
-#  pull(Genus)
-
-# 4. FILTER DATA
-# Keep rows that match EITHER the top families OR the top genera
-#cutoff_data <- all_data %>%
-#  filter(Family %in% top_families | Genus %in% top_genera)
-
-# 5. EXPORT THE CUTOFF CSV
-#write.csv(cutoff_data, "output_bat16S/heatmap_data_cutoff_top10.csv", row.names = FALSE)
-
-### ----- 5% prevalence of the sample 
+### ----- 2% prevalence of the sample 
 
 all_data <- read.csv("output_bat16S/heatmap_data.csv", stringsAsFactors = FALSE)
 
 # 2. CALCULATE TOTAL SAMPLES IN DATASET
 total_samples_in_dataset <- sum(unique(all_data[c("Animal", "Species")])$Species)
-cutoff_threshold <- total_samples_in_dataset * 0.05
+cutoff_threshold <- total_samples_in_dataset * 0.02
 
 cat(sprintf("Total Samples: %d\n", total_samples_in_dataset))
 cat(sprintf("10%% Cutoff Threshold: %.2f samples\n", cutoff_threshold))
@@ -439,13 +393,13 @@ family_prevalence <- all_data %>%
 data_filtered <- data_filtered %>%
   filter(Family %in% family_prevalence$Family)
 
-write.csv(data_filtered, "output_bat16S/heatmap_data_cutoff_5%.csv", row.names = FALSE)
+write.csv(data_filtered, "output_bat16S/heatmap_data_cutoff_2%.csv", row.names = FALSE)
 
-### ------ include only animal with at least 20 distinct samples (indices)
+### ------ include only animal with at least 10 distinct samples (indices)
 
 # 1. Load Data
 #all_data <- read.csv("output_bat16S/heatmap_data.csv", stringsAsFactors = FALSE)
-all_data <- read.csv("output_bat16S/heatmap_data_cutoff_5%.csv", stringsAsFactors = FALSE)
+all_data <- read.csv("output_bat16S/heatmap_data_cutoff_2%.csv", stringsAsFactors = FALSE)
 
 table(all_data$Animal)
 
@@ -459,7 +413,7 @@ cat(sprintf("Original unique animals: %d\n", n_distinct(all_data$Animal)))
 cat(sprintf("Animals remaining (>= 10 samples): %d\n", n_distinct(all_data_filtered$Animal)))
 
 # 3. SAVE THE FILTERED DATA
-write.csv(all_data_filtered, "output_bat16S/heatmap_data_cutoff_5%_10samples.csv", row.names = FALSE)
+write.csv(all_data_filtered, "output_bat16S/heatmap_data_cutoff_2%_10samples.csv", row.names = FALSE)
 
 # ============================================================================ #
 # ----------------------------- working script ------------------------------- #
