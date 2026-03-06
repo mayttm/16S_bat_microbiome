@@ -106,24 +106,49 @@ process_csv_file <- function(input_file, output_file) {
   return(result)
 }
 
+
 process_target_families <- function(input_file, output_file, target_families = NULL) {
   
-  # ADD HERE TO THE LIST...
   if (is.null(target_families)) {
     target_families <- c(
+      "Aeromonadaceae",
+      "Anaplasmataceae",
+      "Bacillaceae",
+      "Bartonellaceae",
+      "Brachyspiraceae",
+      "Budviciaceae",
+      "Burkholderiaceae",
       "Campylobacteraceae",
       "Chlamydiaceae",
+      "Clostridiaceae",
+      "Corynebacteriaceae",
       "Coxiellaceae",
       "Enterobacteriaceae",
       "Enterococcaceae",
+      "Erwiniaceae",
+      "Flavobacteriaceae",
+      "Hafniaceae",
       "Helicobacteraceae",
+      "Lactobacillaceae",
       "Legionellaceae",
       "Leptospiraceae",
+      "Listeriaceae",
+      "Micrococcaceae",
       "Moraxellaceae",
+      "Morganellaceae",
       "Mycobacteriaceae",
+      "Mycoplasmataceae",
+      "Neisseriaceae",
       "Pasteurellaceae",
+      "Pectobacteriaceae",
+      "Peptostreptococcaceae",
+      "Pseudomonadaceae",
+      "Spirochaetaceae",
       "Staphylococcaceae",
-      "Streptococcaceae"
+      "Streptococcaceae",
+      "Streptomycetaceae",
+      "Xanthomonadaceae",
+      "Yersiniaceae"
     )
   }
   
