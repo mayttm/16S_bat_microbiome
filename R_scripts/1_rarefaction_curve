@@ -21,6 +21,54 @@ otu_table_original <- read.delim("data/otu_table_corrected_bioproj_primer.txt", 
 #otu_table_original <- read.delim("data/otu_table_corrected_primer_bioproj.txt", row.names = 1, check.names = FALSE)
 otu_table <- otu_table_original
 
+#---------------------summary of statistics ---------------------------------------------------------
+
+library(tidyverse)
+
+calculate_otu_stats <- function(otu_table, table_name = "OTU_Table") {
+
+  sample_sums <- colSums(otu_table)
+
+  feature_sums <- rowSums(otu_table)
+  
+  # Create statistics dataframe
+  stats_df <- data.frame(
+    Metric = c(
+      "Number of samples",
+      "Number of features",
+      "Total frequency",
+      "Median frequency per sample",
+      "3rd quartile frequency per sample",
+      "Mean frequency per sample",
+      "Median frequency per feature",
+      "3rd quartile frequency per feature",
+      "Mean frequency per feature"
+    ),
+    Value = c(
+      ncol(otu_table),                           # Number of samples
+      nrow(otu_table),                           # Number of features
+      sum(otu_table),                            # Total frequency
+      median(sample_sums),                       # Median per sample
+      quantile(sample_sums, 0.75),              # 3rd quartile per sample
+      mean(sample_sums),                         # Mean per sample
+      median(feature_sums),                      # Median per feature
+      quantile(feature_sums, 0.75),             # 3rd quartile per feature
+      mean(feature_sums)                         # Mean per feature
+    )
+  )
+  
+  # Add table name column
+  stats_df$Table <- table_name
+  
+  return(stats_df)
+}
+
+stats <- calculate_otu_stats(otu_table, "OTU_Table")
+print(stats)
+write.csv(stats, "otu_table_statistics.csv", row.names = FALSE)
+
+#-------------------------------------------------------------------------------
+
 # Create aggregated genus-level table for most analyses
 taxonomic <- taxonomy_df[, 1]
 otu_table$bac_tax_group <- taxonomic[match(rownames(otu_table), rownames(taxonomy_df))]
