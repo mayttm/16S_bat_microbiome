@@ -2302,6 +2302,11 @@ library(patchwork)
 
 data <- read_csv("output/df_taxa_metadata_160.csv")
 
+diet_freq <- data %>%
+  count(Diet_type, sort = TRUE)
+
+diet_freq
+
 conf_mat_plot_cw_diet1 <- make_confusion_plot(data, remove_outliers = TRUE, plot_title = "")
 
 print(conf_mat_plot_cw_diet1)
@@ -3978,3 +3983,4 @@ for (ext in c("jpg", "pdf", "tiff")) {
     dpi = 300
   )
 }
+
