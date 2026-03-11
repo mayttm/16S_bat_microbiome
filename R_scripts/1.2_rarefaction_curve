@@ -1,0 +1,82 @@
+# Ternary Plot for Kruger Wild Mammal Data
+#install.packages("ggtern")
+#install.packages("rlang")
+library(ggtern)
+library(dplyr)
+library(readr)
+library(RColorBrewer)
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(viridis)
+library(ggpubr)
+library(patchwork)
+library(cowplot)
+
+################################################################################
+## ----------------------- rarefaction curve -------------------------------- ##
+
+library(vegan)
+
+abundance_cols <- grep("^d__", colnames(df), value = TRUE)
+otu_matrix <- df[, abundance_cols]
+otu_matrix <- as.matrix(otu_matrix)
+class(otu_matrix) <- "numeric"
+
+# Define your custom colors (matching your previous script)
+diet_colors <- c(
+  "Insect" = "#ff5e2b",
+  "Blood"  = "#ba0970",
+  "Fruit"  = "#2E8B57",
+  "Fish"   = "#303F9F"
+)
+
+rare_data <- rarecurve(otu_matrix, step = 100, label = FALSE, tidy = TRUE) 
+
+rare_data$Site <- as.character(rare_data$Site)
+
+# Create a temporary lookup table from your metadata
+meta_lookup <- df %>% 
+  rownames_to_column("Site") %>% 
+  select(Site, Diet_type)
+
+# Merge rarefaction data with Diet info
+rare_plot_data <- left_join(rare_data, meta_lookup, by = "Site")
+
+# Create the plot object (assign it to a variable, don't just print it)
+alpha_rarefaction_plot <- ggplot(rare_plot_data, aes(x = Sample, y = Species, group = Site, color = Diet_type)) +
+  geom_line(alpha = 0.7, size = 0.5) + 
+  scale_color_manual(values = diet_colors) +
+  scale_x_continuous(
+    limits = c(0, 10000),       # Set max to 10000
+    breaks = seq(0, 10000, by = 1000) # Set interval to 1000
+  ) +
+  theme_bw() +
+  labs(
+    title = "Alpha Rarefaction Curves by Diet (160bp)",
+    x = "Sequencing Depth (Reads)",
+    y = "Observed Features (ASVs)",
+    color = "Diet Group"
+  ) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "right"
+  )
+
+print(alpha_rarefaction_plot)
+
+out_dir <- "output_bioproj_prim"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("alpha_rarefaction_by_diet.", ext)),
+    plot = alpha_rarefaction_plot,
+    width = 12,
+    height = 8,
+    units = "in",
+    dpi = 300,
+    bg = "white"
+  )
+  print(paste("Saved:", ext))
+}
