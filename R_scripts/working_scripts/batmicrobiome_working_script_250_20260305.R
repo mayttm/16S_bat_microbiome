@@ -2296,13 +2296,17 @@ make_confusion_plot <- function(data, remove_outliers = TRUE, plot_title = "") {
 }
 
 # ---------
-
 library(readr)
 library(ggplot2)
 library(patchwork)
 
 data <- read_csv("output/df_taxa_metadata_250.csv")
 
+diet_freq <- data %>%
+  count(Diet_type, sort = TRUE)
+
+diet_freq
+                         
 conf_mat_plot_cw_diet1 <- make_confusion_plot(data, remove_outliers = TRUE, plot_title = "")
 
 print(conf_mat_plot_cw_diet1)
@@ -2412,8 +2416,7 @@ make_confusion_plot_counts <- function(data, remove_outliers = TRUE, plot_title 
 }
 
 data <- read_csv("output/df_taxa_metadata_250.csv")
-
-# Create plot
+                         
 conf_mat_plot_cw_diet1_counts <- make_confusion_plot_counts(data, remove_outliers = FALSE, plot_title = "")
 
 # Display plot
@@ -3979,3 +3982,4 @@ for (ext in c("jpg", "pdf", "tiff")) {
     dpi = 300
   )
 }
+
