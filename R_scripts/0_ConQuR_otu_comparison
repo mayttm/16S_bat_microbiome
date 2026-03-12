@@ -5,8 +5,8 @@ library(reshape2)
 library(ape)
 
 # ---- 1. Load Data ----
-setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
-#setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/250")
+#setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/250")
 #taxonomy_df <- read.delim("data/taxonomy.tsv", row.names = 1, check.names = FALSE)
 otu_table_original <- read.delim("data/otu_table_uncorrected.txt", row.names = 1, check.names = FALSE)
 
@@ -25,7 +25,7 @@ library(ape)
 
 # ---- 1. Load Data ----
 # Adjust this path as needed
-setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/250")
 
 # Define directories
 data_dir <- "data/"
@@ -174,6 +174,301 @@ cat(sprintf("To assess the impact of batch correction, we compared the uncorrect
             mantel_res$statistic, protest_res$t0, median(sample_cors), quantile(sample_cors, 0.25), quantile(sample_cors, 0.75)))
 
 ## ========================================================================== ##
+## ---------------- bioproj_only vs bioproj_primer -------------------------- ##
+
+library(vegan)
+library(ggplot2)
+library(reshape2)
+library(ape)
+
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/250")
+
+# Define directories
+data_dir <- "data/"
+output_dir <- "output/"
+
+## ========================================================================== ##
+## ---------------- bioproj_only vs bioproj_primer -------------------------- ##
+
+# 1. BioProject Only (This will be rotated)
+df_bio <- read.table(file.path(data_dir, "otu_table_corrected_bioproject_only.txt"),
+                     sep = "\t", header = TRUE, row.names = 1, check.names = FALSE)
+
+# 2. BioProject -> Primer (This will be the Target/Reference)
+df_bp <- read.table(file.path(data_dir, "otu_table_corrected_bioproj_primer.txt"),
+                    sep = "\t", header = TRUE, row.names = 1, check.names = FALSE)
+
+# Ensure matrices are aligned (same samples and features in same order)
+common_samples <- intersect(colnames(df_bio), colnames(df_bp))
+common_features <- intersect(rownames(df_bio), rownames(df_bp))
+
+mat_bio <- as.matrix(df_bio[common_features, common_samples])
+mat_bp  <- as.matrix(df_bp[common_features, common_samples])
+
+# ---- 2. Global Matrix Correlation (Mantel Test) ----
+
+# Calculate Bray-Curtis dissimilarity for both methods
+dist_bio <- vegdist(t(mat_bio), method = "bray")
+dist_bp  <- vegdist(t(mat_bp), method = "bray")
+
+# Run Mantel test (correlation between distance matrices)
+mantel_res <- mantel(dist_bio, dist_bp, method = "pearson", permutations = 999)
+
+cat("\n--- Mantel Test Results ---\n")
+print(mantel_res)
+
+# ---- 3. Procrustes Analysis (Ordination Alignment) ----
+
+# Perform PCoA on both distance matrices
+pcoa_bio <- cmdscale(dist_bio, k = 2, eig = TRUE)
+pcoa_bp  <- cmdscale(dist_bp, k = 2, eig = TRUE)
+
+# Run Procrustes analysis to minimize sum of squared differences
+# TARGET (X) = BioProject -> Primer (pcoa_bp)
+# ROTATED (Y) = BioProject Only (pcoa_bio)
+procrustes_res <- procrustes(pcoa_bp, pcoa_bio, symmetric = TRUE)
+protest_res <- protest(pcoa_bp, pcoa_bio, permutations = 999)
+
+cat("\n--- Procrustes Test Results ---\n")
+print(protest_res)
+
+# ---- Function to Draw the Plot ----
+draw_procrustes_plot <- function(proc_res) {
+  # 1. Setup the empty plot canvas
+  plot(proc_res, kind = 0, type = "n",
+       main = "Procrustes Analysis: Single vs Sequential Correction",
+       xlab = "Dimension 1", ylab = "Dimension 2")
+  
+  # 2. Add the "Target" points (BioProject -> Primer) in RED
+  points(proc_res, display = "target", col = "red", pch = 16)
+  
+  # 3. Add the "Rotated" points (BioProject Only) in GREY/BLUE
+  points(proc_res, display = "rotated", col = "grey40", pch = 16, cex = 1)
+  
+  # 4. Add the arrows connecting them (from Rotated to Target)
+  arrows(proc_res$Yrot[,1], proc_res$Yrot[,2],
+         proc_res$X[,1], proc_res$X[,2],
+         length = 0.1, col = "gray40", lwd = 0.5)
+  
+  # 5. Add the Legend
+  legend("topright",
+         legend = c("Target: BioProject -> Primer", "Rotated: BioProject Only"),
+         col = c("red", "grey40"),
+         pch = c(16, 16),
+         pt.cex = c(0.8, 0.8),
+         bty = "n")
+}
+
+# Define the formats and their specific parameters
+formats <- list(
+  jpg  = list(device = jpeg, filename = "FigS5_Procrustes_BioOnly_vs_BioPrimer.jpg",  res = 300),
+  tiff = list(device = tiff, filename = "FigS5_Procrustes_BioOnly_vs_BioPrimer.tiff", res = 300, compression = "lzw"),
+  pdf  = list(device = pdf,  filename = "FigS5_Procrustes_BioOnly_vs_BioPrimer.pdf",  res = NA)
+)
+
+# Iterate through the formats
+for (fmt in formats) {
+  full_path <- file.path(output_dir, fmt$filename)
+  
+  if (fmt$filename == "FigS5_Procrustes_BioOnly_vs_BioPrimer.pdf") {
+    fmt$device(full_path, width = 10, height = 8)
+  } else {
+    if (!is.null(fmt$compression)) {
+      fmt$device(full_path, width = 10, height = 8, units = "in", res = fmt$res, compression = fmt$compression)
+    } else {
+      fmt$device(full_path, width = 10, height = 8, units = "in", res = fmt$res, quality = 90)
+    }
+  }
+  
+  draw_procrustes_plot(procrustes_res)
+  dev.off()
+  cat("Saved:", full_path, "\n")
+}
+
+# ------------------ 4. Sample-wise Correlation Analysis -----------------------
+
+# Calculate Pearson correlation for each sample between the two methods
+sample_cors <- sapply(1:ncol(mat_bio), function(i) {
+  cor(mat_bio[, i], mat_bp[, i], method = "pearson")
+})
+
+summary_cors <- summary(sample_cors)
+cat("\n--- Sample-wise Pearson Correlations ---\n")
+print(summary_cors)
+
+# Create a histogram of correlations for the manuscript
+df_cor <- data.frame(Correlation = sample_cors)
+p_hist <- ggplot(df_cor, aes(x = Correlation)) +
+  geom_histogram(binwidth = 0.001, fill = "steelblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Sample-wise Correlations",
+       subtitle = "Comparison of BioProject Only vs BioProject->Primer",
+       x = "Pearson Correlation Coefficient (r)",
+       y = "Count of Samples") +
+  geom_vline(aes(xintercept = median(Correlation)), color="grey40", linetype="dashed")
+
+ggsave(file.path(output_dir, "FigS6_Correlations_BioOnly_vs_BioPrimer.jpg"), p_hist, width = 10, height = 8)
+
+# ---- 5. Feature-wise Mean Difference (Bland-Altman style check) ----
+
+# Calculate mean abundance per feature for both methods
+mean_bio <- rowMeans(mat_bio)
+mean_bp  <- rowMeans(mat_bp)
+
+# Calculate L2 norm (Euclidean distance) between the two full matrices
+frobenius_diff <- norm(mat_bio - mat_bp, type = "F")
+
+cat("\n--- Frobenius Norm of Difference Matrix (lower is better) ---\n")
+print(frobenius_diff)
+
+# ---- 6. Generate Manuscript Table Text ----
+
+cat("\n--- Suggested Manuscript Text ---\n")
+cat(sprintf("To assess the specific impact of the secondary primer correction, we compared the single-step 'BioProject Only' correction against the full 'BioProject then Primer' sequence. The two approaches yielded highly congruent community structures (Mantel test r = %.4f, p < 0.001; Procrustes correlation t = %.4f, p < 0.001). The median Pearson correlation of feature abundances within samples between the two methods was %.4f (IQR: %.4f - %.4f).",
+            mantel_res$statistic, protest_res$t0, median(sample_cors), quantile(sample_cors, 0.25), quantile(sample_cors, 0.75)))
+
+## ========================================================================== ##
+## ---------------- primer_only vs bioproj_primer --------------------------- ##
+
+# 1. Primer Group Only (This will be rotated)
+df_prim <- read.table(file.path(data_dir, "otu_table_corrected_primer_group_only.txt"),
+                      sep = "\t", header = TRUE, row.names = 1, check.names = FALSE)
+
+# 2. BioProject -> Primer (This will be the Target/Reference)
+df_bp <- read.table(file.path(data_dir, "otu_table_corrected_bioproj_primer.txt"),
+                    sep = "\t", header = TRUE, row.names = 1, check.names = FALSE)
+
+# Ensure matrices are aligned (same samples and features in same order)
+common_samples <- intersect(colnames(df_prim), colnames(df_bp))
+common_features <- intersect(rownames(df_prim), rownames(df_bp))
+
+mat_prim <- as.matrix(df_prim[common_features, common_samples])
+mat_bp   <- as.matrix(df_bp[common_features, common_samples])
+
+# ---- 2. Global Matrix Correlation (Mantel Test) ----
+
+# Calculate Bray-Curtis dissimilarity for both methods
+dist_prim <- vegdist(t(mat_prim), method = "bray")
+dist_bp   <- vegdist(t(mat_bp), method = "bray")
+
+# Run Mantel test (correlation between distance matrices)
+mantel_res <- mantel(dist_prim, dist_bp, method = "pearson", permutations = 999)
+
+cat("\n--- Mantel Test Results ---\n")
+print(mantel_res)
+
+# ---- 3. Procrustes Analysis (Ordination Alignment) ----
+
+# Perform PCoA on both distance matrices
+pcoa_prim <- cmdscale(dist_prim, k = 2, eig = TRUE)
+pcoa_bp   <- cmdscale(dist_bp, k = 2, eig = TRUE)
+
+# Run Procrustes analysis to minimize sum of squared differences
+# TARGET (X) = BioProject -> Primer (pcoa_bp)
+# ROTATED (Y) = Primer Only (pcoa_prim)
+procrustes_res <- procrustes(pcoa_bp, pcoa_prim, symmetric = TRUE)
+protest_res <- protest(pcoa_bp, pcoa_prim, permutations = 999)
+
+cat("\n--- Procrustes Test Results ---\n")
+print(protest_res)
+
+# ---- Function to Draw the Plot ----
+draw_procrustes_plot <- function(proc_res) {
+  # 1. Setup the empty plot canvas
+  plot(proc_res, kind = 0, type = "n",
+       main = "Procrustes Analysis: Primer Only vs BioProject+Primer",
+       xlab = "Dimension 1", ylab = "Dimension 2")
+  
+  # 2. Add the "Target" points (BioProject -> Primer) in BLACK/RED
+  # Ideally, the target is the "ground truth" or the more complex model
+  points(proc_res, display = "target", col = "red", pch = 16)
+  
+  # 3. Add the "Rotated" points (Primer Only) in BLUE
+  points(proc_res, display = "rotated", col = "grey40", pch = 16, cex = 1)
+  
+  # 4. Add the arrows connecting them (from Rotated to Target)
+  arrows(proc_res$Yrot[,1], proc_res$Yrot[,2],
+         proc_res$X[,1], proc_res$X[,2],
+         length = 0.1, col = "gray20", lwd = 0.5)
+  
+  # 5. Add the Legend
+  legend("topright",
+         legend = c("Target: BioProject -> Primer", "Rotated: Primer Only"),
+         col = c("red", "grey40"),
+         pch = c(16, 16),
+         pt.cex = c(0.8, 0.8),
+         bty = "n")
+}
+
+# Define the formats and their specific parameters
+formats <- list(
+  jpg  = list(device = jpeg, filename = "FigS7_Procrustes_PrimerOnly_vs_BioPrimer.jpg",  res = 300),
+  tiff = list(device = tiff, filename = "FigS7_Procrustes_PrimerOnly_vs_BioPrimer.tiff", res = 300, compression = "lzw"),
+  pdf  = list(device = pdf,  filename = "FigS7_Procrustes_PrimerOnly_vs_BioPrimer.pdf",  res = NA) 
+)
+
+# Iterate through the formats
+for (fmt in formats) {
+  full_path <- file.path(output_dir, fmt$filename)
+  
+  if (fmt$filename == "FigS7_Procrustes_PrimerOnly_vs_BioPrimer.pdf") {
+    fmt$device(full_path, width = 10, height = 8)
+  } else {
+    if (!is.null(fmt$compression)) {
+      fmt$device(full_path, width = 10, height = 8, units = "in", res = fmt$res, compression = fmt$compression)
+    } else {
+      fmt$device(full_path, width = 10, height = 8, units = "in", res = fmt$res, quality = 90)
+    }
+  }
+  
+  draw_procrustes_plot(procrustes_res)
+  dev.off()
+  cat("Saved:", full_path, "\n")
+}
+
+# ------------------ 4. Sample-wise Correlation Analysis -----------------------
+
+# Calculate Pearson correlation for each sample between the two methods
+sample_cors <- sapply(1:ncol(mat_prim), function(i) {
+  cor(mat_prim[, i], mat_bp[, i], method = "pearson")
+})
+
+summary_cors <- summary(sample_cors)
+cat("\n--- Sample-wise Pearson Correlations ---\n")
+print(summary_cors)
+
+# Create a histogram of correlations for the manuscript
+df_cor <- data.frame(Correlation = sample_cors)
+p_hist <- ggplot(df_cor, aes(x = Correlation))
+  geom_histogram(binwidth = 0.001, fill = "steelblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Sample-wise Correlations",
+       subtitle = "Comparison of Primer Only vs BioProject->Primer",
+       x = "Pearson Correlation Coefficient (r)",
+       y = "Count of Samples") +
+  geom_vline(aes(xintercept = median(Correlation)), color="grey40", linetype="dashed")
+
+ggsave(file.path(output_dir, "FigS8_Correlations_PrimerOnly_vs_BioPrimer.jpg"), p_hist, width = 10, height = 8)
+
+# ---- 5. Feature-wise Mean Difference (Bland-Altman style check) ----
+
+# Calculate mean abundance per feature for both methods
+mean_prim <- rowMeans(mat_prim)
+mean_bp   <- rowMeans(mat_bp)
+
+# Calculate L2 norm (Euclidean distance) between the two full matrices
+frobenius_diff <- norm(mat_prim - mat_bp, type = "F")
+
+cat("\n--- Frobenius Norm of Difference Matrix (lower is better) ---\n")
+print(frobenius_diff)
+
+# ---- 6. Generate Manuscript Table Text ----
+
+cat("\n--- Suggested Manuscript Text ---\n")
+cat(sprintf("To determine how much additional variance is corrected by including BioProject after Primer correction, we compared 'Primer Only' against the sequential 'BioProject then Primer' correction. The two approaches showed a Mantel correlation of r = %.4f (p < 0.001) and a Procrustes correlation of t = %.4f (p < 0.001). The median within-sample Pearson correlation was %.4f (IQR: %.4f - %.4f).",
+            mantel_res$statistic, protest_res$t0, median(sample_cors), quantile(sample_cors, 0.25), quantile(sample_cors, 0.75)))
+
+## ========================================================================== ##
 ## ---------------- bioproj_primer vs primer_bioproj ------------------------ ##
 
 # Load the two count tables (Rows = Features, Cols = Samples)
@@ -244,9 +539,9 @@ draw_procrustes_plot <- function(proc_res) {
 
 # Define the formats and their specific parameters
 formats <- list(
-  jpg  = list(device = jpeg, filename = "FigS5_Procrustes_Correction_Order.jpg",  res = 300),
-  tiff = list(device = tiff, filename = "FigS5_Procrustes_Correction_Order.tiff", res = 300, compression = "lzw"),
-  pdf  = list(device = pdf,  filename = "FigS5_Procrustes_Correction_Order.pdf",  res = NA) # PDF doesn't use res
+  jpg  = list(device = jpeg, filename = "FigS9_Procrustes_Correction_Order.jpg",  res = 300),
+  tiff = list(device = tiff, filename = "FigS9_Procrustes_Correction_Order.tiff", res = 300, compression = "lzw"),
+  pdf  = list(device = pdf,  filename = "FigS9_Procrustes_Correction_Order.pdf",  res = NA) # PDF doesn't use res
 )
 
 # Iterate through the formats
