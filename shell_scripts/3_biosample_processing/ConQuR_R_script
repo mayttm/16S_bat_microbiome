@@ -1,17 +1,25 @@
 # conqur_analysis_sequential.R
+# 1. Clear environment (optional but fine)
+rm(list = ls(all.names = TRUE)); gc()
 
-# 1. CLEANUP FIRST (Before loading anything)
-if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
-rm(list = ls(all.names = TRUE))
-while (!is.null(dev.list())) dev.off()
-gc()
-
-# 2. FORCE CORRECT LIBRARY PATH (Crucial for HiPerGator)
-# This ensures it looks in YOUR folder first, before the system folder
+# 2. FORCE the library path. 
+# This tells R: "Look in my personal folder first!"
 .libPaths(c("/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4", .libPaths()))
 
-# 3. SET OPTIONS
-options(stringsAsFactors = FALSE, digits = 15, scipen = 999)
+# Install foreign into your personal library
+if(!require("foreign", lib.loc="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4")) {
+    install.packages("foreign", lib="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4", repos="http://cran.us.r-project.org")
+}
+
+# Now load it explicitly from there
+library(foreign, lib.loc="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4")
+
+# 3. NOW load libraries
+library(ConQuR)
+
+# 4. EXPLICITLY load the local version of foreign before qiime2R
+# This ensures we don't accidentally grab the broken system version
+library(foreign, lib.loc="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4")
 
 # ---- Libraries ----
 library(ConQuR)
@@ -29,7 +37,7 @@ library(foreach)
 #options(stringsAsFactors = FALSE, digits = 15, scipen = 999)
 
 # ---- Output directory ----
-output_dir <- "conqur/160_comb_diet2_20260303_diet2"
+output_dir <- "conqur/160_comb_diet2_20260312"
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 # ---- Inputs ----
@@ -132,337 +140,38 @@ for (nm in names(stages)) {
   write.table(stages[[nm]], file = gzfile(fn), sep = "\t", quote = FALSE, col.names = NA)
 }
 
-# ---- Export batch-corrected OTU tables for both sequential orders as .txt ----
+# ---- Export batch-corrected OTU tables as .txt ----
 # Matrices in 'stages' are samples x features. Transpose so rows = taxa, columns = samples.
-# bioproject -> primer_group
+
+# 1. bioproject -> primer_group
 taxa_corrected_bio_primer <- t(stages$bio_then_primer)
 df_bp <- data.frame(feature_id = rownames(taxa_corrected_bio_primer), taxa_corrected_bio_primer, check.names = FALSE)
 otu_path_bp <- file.path(output_dir, "otu_table_corrected_bioproject_then_primer_group.txt")
 write.table(df_bp, file = otu_path_bp, sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
 cat("Batch-corrected OTU table written to:", otu_path_bp, "\n")
 
-# primer_group -> bioproject
+# 2. primer_group -> bioproject
 taxa_corrected_primer_bio <- t(stages$primer_then_bio)
 df_pb <- data.frame(feature_id = rownames(taxa_corrected_primer_bio), taxa_corrected_primer_bio, check.names = FALSE)
 otu_path_pb <- file.path(output_dir, "otu_table_corrected_primer_group_then_bioproject.txt")
 write.table(df_pb, file = otu_path_pb, sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
 cat("Batch-corrected OTU table written to:", otu_path_pb, "\n")
 
-# Also save a generic corrected table alias
+# 3. bioproject ONLY
+taxa_corrected_bio_only <- t(stages$bio_only)
+df_bio_only <- data.frame(feature_id = rownames(taxa_corrected_bio_only), taxa_corrected_bio_only, check.names = FALSE)
+otu_path_bio_only <- file.path(output_dir, "otu_table_corrected_bioproject_only.txt")
+write.table(df_bio_only, file = otu_path_bio_only, sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+cat("Batch-corrected OTU table written to:", otu_path_bio_only, "\n")
+
+# 4. primer_group ONLY
+taxa_corrected_primer_only <- t(stages$primer_only)
+df_primer_only <- data.frame(feature_id = rownames(taxa_corrected_primer_only), taxa_corrected_primer_only, check.names = FALSE)
+otu_path_primer_only <- file.path(output_dir, "otu_table_corrected_primer_group_only.txt")
+write.table(df_primer_only, file = otu_path_primer_only, sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+cat("Batch-corrected OTU table written to:", otu_path_primer_only, "\n")
+
+# Also save a generic corrected table alias (defaults to BP order)
 otu_path <- file.path(output_dir, "otu_table_corrected.txt")
 write.table(df_bp, file = otu_path, sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
-cat("Batch-corrected OTU table written to:", otu_path, "\n")
-
-##################################################################################
-# ============================================================================== #
-
-diet2_colors <- c(
-  "Fruits"    = "darkgreen",
-  "Insects"    = "orange",
-  "Fishes" = "darkblue",
-  "Blood" = "darkred")
-
-# ---- Alpha & Beta diversity on chosen batch-corrected data ----
-# Choose which corrected stage to use for downstream diversity (change if needed)
-corrected_stage <- "bio_then_primer"  
-
-# 1) Create a copy of the original phyloseq object, prune to exact sample/taxa, and update ASV table
-phy_original <- phy
-samp_keep <- rownames(stages[[corrected_stage]])   # samples in corrected stage
-tax_keep  <- colnames(stages[[corrected_stage]])   # features (ASVs) in corrected stage
-
-phy_copy <- phyloseq::prune_samples(samp_keep, phy_original)
-phy_copy <- phyloseq::prune_taxa(tax_keep,  phy_copy)
-
-# Build corrected OTU table with matching order: features x samples
-corrected <- t(stages[[corrected_stage]][sample_names(phy_copy), taxa_names(phy_copy), drop = FALSE])
-otu_table(phy_copy) <- otu_table(corrected, taxa_are_rows = TRUE)
-
-# 2) Alpha diversity (richness metrics)
-alpha_diversity <- phyloseq::estimate_richness(phy_copy)
-metadata_df <- data.frame(sample_data(phy_copy), check.names = FALSE)
-
-# Merge alpha metrics with metadata by rownames (preserves order, avoids name mangling)
-measures_metadata_rare <- cbind(metadata_df[rownames(alpha_diversity), , drop = FALSE],
-                                alpha_diversity)
-
-# Save alpha metrics
-alpha_out_tsv <- file.path(output_dir, paste0("alpha_diversity_", corrected_stage, ".tsv"))
-write.table(measures_metadata_rare, file = alpha_out_tsv, sep = "\t", quote = FALSE, col.names = NA)
-
-table(measures_metadata_rare$diet_2, useNA = "ifany")
-sum(is.na(measures_metadata_rare$diet_2))
-sum(trimws(measures_metadata_rare$diet_2) == "NA", na.rm = TRUE)
-measures_metadata_rare_clean <- subset(measures_metadata_rare, !is.na(diet_2) & trimws(diet_2) != "NA")
-
-# Plot Shannon by diet_2 (adjust variable as desired)
-p_alpha <- ggplot(measures_metadata_rare_clean, aes(x = diet_2, y = Shannon, fill = diet_2)) +
-  ggtitle(paste("Shannon diversity by diet_2 (", corrected_stage, ")", sep = "")) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_point(position = position_jitterdodge(), pch = 21) +
-  scale_fill_manual(values = diet2_colors) +
-  theme_minimal() +
-  theme(
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background  = element_rect(fill = "white", color = NA),
-    legend.background = element_rect(fill = "white", color = NA)
-  )
-print(p_alpha)
-
-ggsave(filename = file.path(output_dir, paste0("alpha_shannon_by_diet2_", corrected_stage, ".png")),
-       plot = p_alpha, width = 7, height = 5, dpi = 300, bg = "white")
-
-# Statistical tests: Kruskal-Wallis + Dunn's test (BH p-value adjustment)
-V <- "diet_2"
-alpha_table <- measures_metadata_rare
-formula_test_shannon <- as.formula(paste("Shannon ~", V))
-kw_p <- kruskal.test(formula_test_shannon, data = alpha_table)$p.value
-
-# Dunn's test (FSA::dunnTest) if package is available
-if (!requireNamespace("FSA", quietly = TRUE)) {
-  message("Package 'FSA' not installed. Install with install.packages('FSA') to run Dunn's test.")
-} else {
-  dunn_res <- FSA::dunnTest(formula_test_shannon, data = alpha_table, method = "bh")
-  sink(file.path(output_dir, paste0("alpha_dunn_shannon_", corrected_stage, ".txt")))
-  cat("Kruskal-Wallis p-value:", kw_p, "\n\n")
-  print(dunn_res)
-  sink()
-}
-
-# 3) Beta diversity (Bray-Curtis on relative abundance) + PCoA + PERMANOVA
-# Build X aligned to phy_copy and clamp negatives to 0 (if any)
-X <- stages[[corrected_stage]][sample_names(phy_copy), taxa_names(phy_copy), drop = FALSE]
-if (any(X < 0, na.rm = TRUE)) {
-  warning("Negative values detected in corrected matrix; clamping to 0 for Bray-Curtis.")
-  X[X < 0] <- 0
-}
-
-# Relative abundance transform
-row_sums <- pmax(rowSums(X), 1e-8)
-X_rel <- sweep(X, 1, row_sums, "/")
-
-# Bray-Curtis distances
-dist_bray <- vegan::vegdist(X_rel, method = "bray")
-
-pcoa <- cmdscale(dist_bray, k = 2, eig = TRUE)
-pcoa_df <- data.frame(SampleID = rownames(X_rel),
-                      PC1 = pcoa$points[, 1],
-                      PC2 = pcoa$points[, 2],
-                      metadata_df[rownames(X_rel), , drop = FALSE],
-                      check.names = FALSE)
-
-# Use the distance labels (safer) for row order and metadata alignment
-ord_samples <- labels(dist_bray)
-meta_sub <- metadata_df[ord_samples, , drop = FALSE]
-stopifnot(all(ord_samples == rownames(pcoa$points)))
-
-# Build plotting frame
-pcoa_df <- data.frame(
-  SampleID = ord_samples,
-  PC1 = pcoa$points[, 1],
-  PC2 = pcoa$points[, 2],
-  meta_sub,
-  check.names = FALSE
-)
-
-# Ensure diet_2 exists and map colors properly
-stopifnot("diet_2" %in% colnames(pcoa_df))
-lvl <- intersect(names(diet2_colors), unique(as.character(pcoa_df$diet_2)))
-pcoa_df$diet_2 <- factor(as.character(pcoa_df$diet_2), levels = lvl)
-
-# Percent variance for axis labels (use only positive eigenvalues)
-eig <- pcoa$eig
-pos <- eig[eig > 0]
-var_pct <- if (length(pos) > 0) round(100 * eig / sum(pos), 1) else rep(NA_real_, length(eig))
-x_lab <- if (!is.na(var_pct[1])) paste0("PCoA 1 (", var_pct[1], "%)") else "PCoA 1"
-y_lab <- if (!is.na(var_pct[2])) paste0("PCoA 2 (", var_pct[2], "%)") else "PCoA 2"
-
-# Define levels present and drop NA rows
-pcoa_df_clean <- subset(pcoa_df, !is.na(diet_2))
-lvl <- intersect(levels(droplevels(pcoa_df_clean$diet_2)), names(diet2_colors))
-
-p_pcoa <- ggplot(pcoa_df_clean, aes(x = PC1, y = PC2, color = diet_2)) +
-  ggtitle(paste("PCoA (Bray-Curtis) on corrected data: ", corrected_stage, sep = "")) +
-  geom_hline(yintercept = 0, color = "grey70", linewidth = 0.4) +
-  geom_vline(xintercept = 0, color = "grey70", linewidth = 0.4) +
-  geom_point(size = 3, alpha = 0.9) +
-  scale_color_manual(values = diet2_colors[lvl], na.translate = FALSE) +
-  labs(x = x_lab, y = y_lab, color = "diet_2") +
-  theme_minimal() +
-  theme(
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background  = element_rect(fill = "white", color = NA),
-    legend.background = element_rect(fill = "white", color = NA),
-    plot.title = element_text(face = "bold")
-  )
-print(p_pcoa)
-
-ggsave(filename = file.path(output_dir, paste0("pcoa_bray_diet2_", corrected_stage, ".png")),
-  plot = p_pcoa, width = 7, height = 5, dpi = 300, bg = "white")
-
-##================================================================================
-
-# PERMANOVA (adonis2) testing diet_2 while controlling for covariates
-covars_perm <- c("sample_type", "roost_group", "captive_wild", "habitat_level_1")
-covars_perm <- intersect(covars_perm, colnames(metadata_df))
-meta_for_adonis <- metadata_df[match(labels(dist_bray), rownames(metadata_df)), , drop = FALSE]
-stopifnot(all(rownames(meta_for_adonis) == labels(dist_bray)))
-
-perm_formula <- as.formula(paste("dist_bray ~", paste(c("diet_2", covars_perm), collapse = " + ")))
-perm_res <- vegan::adonis2(perm_formula, data = meta_for_adonis, method = "bray")
-sink(file.path(output_dir, paste0("permanova_diet2_", corrected_stage, ".txt")))
-print(perm_res)
-sink()
-
-##################################################################################
-# =====================FOR PRIM THEN BIOPROJ======================================
-
-corrected_stage_pb <- "primer_then_bio"
-
-# 1) Create a copy of the original phyloseq object, prune to exact sample/taxa, and update ASV table
-phy_original_pb <- phy
-samp_keep_pb <- rownames(stages[[corrected_stage_pb]])   # samples in corrected stage
-tax_keep_pb  <- colnames(stages[[corrected_stage_pb]])   # features (ASVs) in corrected stage
-phy_copy_pb <- phyloseq::prune_samples(samp_keep_pb, phy_original_pb)
-phy_copy_pb <- phyloseq::prune_taxa(tax_keep_pb,  phy_copy_pb)
-
-# Build corrected OTU table with matching order: features x samples
-corrected_pb <- t(stages[[corrected_stage_pb]][sample_names(phy_copy_pb), taxa_names(phy_copy_pb), drop = FALSE])
-otu_table(phy_copy_pb) <- otu_table(corrected_pb, taxa_are_rows = TRUE)
-
-# 2) Alpha diversity (richness metrics)
-alpha_diversity_pb <- phyloseq::estimate_richness(phy_copy_pb)
-metadata_df_pb <- data.frame(sample_data(phy_copy_pb), check.names = FALSE)
-
-# Merge alpha metrics with metadata by rownames
-measures_metadata_rare_pb <- cbind(
-  metadata_df_pb[rownames(alpha_diversity_pb), , drop = FALSE],
-  alpha_diversity_pb
-)
-
-# Save alpha metrics
-alpha_out_tsv_pb <- file.path(output_dir, paste0("alpha_diversity_", corrected_stage_pb, ".tsv"))
-write.table(measures_metadata_rare_pb, file = alpha_out_tsv_pb, sep = "\t", quote = FALSE, col.names = NA)
-
-# Clean diet_2 and plot Shannon
-table(measures_metadata_rare_pb$diet_2, useNA = "ifany")
-sum(is.na(measures_metadata_rare_pb$diet_2))
-sum(trimws(measures_metadata_rare_pb$diet_2) == "NA", na.rm = TRUE)
-measures_metadata_rare_clean_pb <- subset(measures_metadata_rare_pb, !is.na(diet_2) & trimws(diet_2) != "NA")
-
-p_alpha_pb <- ggplot(measures_metadata_rare_clean_pb, aes(x = diet_2, y = Shannon, fill = diet_2)) +
-  ggtitle(paste("Shannon diversity by diet_2 (", corrected_stage_pb, ")", sep = "")) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_point(position = position_jitterdodge(), pch = 21) +
-  scale_fill_manual(values = diet2_colors) +
-  theme_minimal() +
-  theme(
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background  = element_rect(fill = "white", color = NA),
-    legend.background = element_rect(fill = "white", color = NA)
-  )
-print(p_alpha_pb)
-ggsave(filename = file.path(output_dir, paste0("alpha_shannon_by_diet2_", corrected_stage_pb, ".png")),
-       plot = p_alpha_pb, width = 7, height = 5, dpi = 300, bg = "white")
-
-# Statistical tests: Kruskal-Wallis + Dunn's test (BH p-value adjustment)
-V_pb <- "diet_2"
-alpha_table_pb <- measures_metadata_rare_pb
-formula_test_shannon_pb <- as.formula(paste("Shannon ~", V_pb))
-kw_p_pb <- kruskal.test(formula_test_shannon_pb, data = alpha_table_pb)$p.value
-
-if (!requireNamespace("FSA", quietly = TRUE)) {
-  message("Package 'FSA' not installed. Install with install.packages('FSA') to run Dunn's test.")
-} else {
-  dunn_res_pb <- FSA::dunnTest(formula_test_shannon_pb, data = alpha_table_pb, method = "bh")
-  sink(file.path(output_dir, paste0("alpha_dunn_shannon_", corrected_stage_pb, ".txt")))
-  cat("Kruskal-Wallis p-value:", kw_p_pb, "\n\n")
-  print(dunn_res_pb)
-  sink()
-}
-
-# 3) Beta diversity (Bray-Curtis on relative abundance) + PCoA + PERMANOVA
-X_pb <- stages[[corrected_stage_pb]][sample_names(phy_copy_pb), taxa_names(phy_copy_pb), drop = FALSE]
-if (any(X_pb < 0, na.rm = TRUE)) {
-  warning("Negative values detected in corrected matrix; clamping to 0 for Bray-Curtis.")
-  X_pb[X_pb < 0] <- 0
-}
-row_sums_pb <- pmax(rowSums(X_pb), 1e-8)
-X_rel_pb <- sweep(X_pb, 1, row_sums_pb, "/")
-
-dist_bray_pb <- vegan::vegdist(X_rel_pb, method = "bray")
-pcoa_pb <- cmdscale(dist_bray_pb, k = 2, eig = TRUE)
-
-# Align metadata to distance labels
-ord_samples_pb <- labels(dist_bray_pb)
-meta_sub_pb <- metadata_df_pb[ord_samples_pb, , drop = FALSE]
-stopifnot(all(ord_samples_pb == rownames(pcoa_pb$points)))
-
-pcoa_df_pb <- data.frame(
-  SampleID = ord_samples_pb,
-  PC1 = pcoa_pb$points[, 1],
-  PC2 = pcoa_pb$points[, 2],
-  meta_sub_pb,
-  check.names = FALSE
-)
-
-# Ensure diet_2 exists and map colors properly
-stopifnot("diet_2" %in% colnames(pcoa_df_pb))
-lvl_pb <- intersect(names(diet2_colors), unique(as.character(pcoa_df_pb$diet_2)))
-pcoa_df_pb$diet_2 <- factor(as.character(pcoa_df_pb$diet_2), levels = lvl_pb)
-
-# Percent variance for axis labels (use only positive eigenvalues)
-eig_pb <- pcoa_pb$eig
-pos_pb <- eig_pb[eig_pb > 0]
-var_pct_pb <- if (length(pos_pb) > 0) round(100 * eig_pb / sum(pos_pb), 1) else rep(NA_real_, length(eig_pb))
-x_lab_pb <- if (!is.na(var_pct_pb[1])) paste0("PCoA 1 (", var_pct_pb[1], "%)") else "PCoA 1"
-y_lab_pb <- if (!is.na(var_pct_pb[2])) paste0("PCoA 2 (", var_pct_pb[2], "%)") else "PCoA 2"
-
-# Drop NA rows and finalize levels
-pcoa_df_clean_pb <- subset(pcoa_df_pb, !is.na(diet_2))
-lvl_pb <- intersect(levels(droplevels(pcoa_df_clean_pb$diet_2)), names(diet2_colors))
-
-p_pcoa_pb <- ggplot(pcoa_df_clean_pb, aes(x = PC1, y = PC2, color = diet_2)) +
-  ggtitle(paste("PCoA (Bray-Curtis) on corrected data: ", corrected_stage_pb, sep = "")) +
-  geom_hline(yintercept = 0, color = "grey70", linewidth = 0.4) +
-  geom_vline(xintercept = 0, color = "grey70", linewidth = 0.4) +
-  geom_point(size = 3, alpha = 0.9) +
-  scale_color_manual(values = diet2_colors[lvl_pb], na.translate = FALSE) +
-  labs(x = x_lab_pb, y = y_lab_pb, color = "diet_2") +
-  theme_minimal() +
-  theme(
-    panel.background = element_rect(fill = "white", color = NA),
-    plot.background  = element_rect(fill = "white", color = NA),
-    legend.background = element_rect(fill = "white", color = NA)
-  )
-print(p_pcoa_pb)
-
-ggsave(filename = file.path(output_dir, paste0("pcoa_bray_diet2_", corrected_stage_pb, ".png")),
-       plot = p_pcoa_pb, width = 7, height = 5, dpi = 300, bg = "white")
-
-# PERMANOVA (adonis2) testing diet_2 while controlling for covariates
-covars_perm_pb <- c("sample_type", "roost_group", "captive_wild", "habitat_level_1")
-covars_perm_pb <- intersect(covars_perm_pb, colnames(metadata_df_pb))
-meta_for_adonis_pb <- metadata_df_pb[match(labels(dist_bray_pb), rownames(metadata_df_pb)), , drop = FALSE]
-stopifnot(all(rownames(meta_for_adonis_pb) == labels(dist_bray_pb)))
-perm_formula_pb <- as.formula(paste("dist_bray_pb ~", paste(c("diet_2", covars_perm_pb), collapse = " + ")))
-perm_res_pb <- vegan::adonis2(perm_formula_pb, data = meta_for_adonis_pb, method = "bray")
-sink(file.path(output_dir, paste0("permanova_diet2_", corrected_stage_pb, ".txt")))
-print(perm_res_pb)
-sink()
-
-##------------------------------------------------------------------------------------------------------
-
-# Optional: test that batch effects are mitigated (bioproject, primer_group)
-if ("bioproject" %in% colnames(meta_for_adonis_pb)) {
-  perm_bio_pb <- vegan::adonis2(as.formula(paste("dist_bray_pb ~", paste(c("bioproject", covars_perm_pb), collapse = " + "))),
-                                data = meta_for_adonis_pb, method = "bray")
-  sink(file.path(output_dir, paste0("permanova_bioproject_", corrected_stage_pb, ".txt"))); print(perm_bio_pb); sink()
-}
-if ("primer_group" %in% colnames(meta_for_adonis_pb)) {
-  perm_pri_pb <- vegan::adonis2(as.formula(paste("dist_bray_pb ~", paste(c("primer_group", covars_perm_pb), collapse = " + "))),
-                                data = meta_for_adonis_pb, method = "bray")
-  sink(file.path(output_dir, paste0("permanova_primer_group_", corrected_stage_pb, ".txt"))); print(perm_pri_pb); sink()
-}
-
-cat("Sequential ConQuR and corrected-stage alpha/beta diversity completed. Check outputs in: ", output_dir, "\n")
+cat("Generic Batch-corrected OTU table written to:", otu_path, "\n")
