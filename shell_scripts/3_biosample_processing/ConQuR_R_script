@@ -1,24 +1,15 @@
 # conqur_analysis_sequential.R
-# 1. Clear environment (optional but fine)
-rm(list = ls(all.names = TRUE)); gc()
 
-# 2. FORCE the library path. 
-# This tells R: "Look in my personal folder first!"
+rm(list = ls(all.names = TRUE)); gc()
 .libPaths(c("/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4", .libPaths()))
 
-# Install foreign into your personal library
 if(!require("foreign", lib.loc="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4")) {
     install.packages("foreign", lib="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4", repos="http://cran.us.r-project.org")
 }
 
-# Now load it explicitly from there
 library(foreign, lib.loc="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4")
 
-# 3. NOW load libraries
 library(ConQuR)
-
-# 4. EXPLICITLY load the local version of foreign before qiime2R
-# This ensures we don't accidentally grab the broken system version
 library(foreign, lib.loc="/home/thongthum.t/R/x86_64-pc-linux-gnu-library/4.4")
 
 # ---- Libraries ----
