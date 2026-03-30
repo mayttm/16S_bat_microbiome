@@ -1,0 +1,795 @@
+# Ternary Plot for Kruger Wild Mammal Data
+#install.packages("ggtern")
+#install.packages("rlang")
+library(ggtern)
+library(dplyr)
+library(readr)
+library(RColorBrewer)
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(viridis)
+library(ggpubr)
+library(patchwork)
+library(cowplot)
+library(vegan)
+
+# data preparation
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+#setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+taxonomy_df <- read.delim("data/taxonomy.tsv", row.names = 1, check.names = FALSE)
+otu_table_original <- read.delim("data/otu_table_corrected_bioproj_primer.txt", row.names = 1, check.names = FALSE)
+#otu_table_original <- read.delim("data/otu_table_corrected_primer_bioproj.txt", row.names = 1, check.names = FALSE)
+otu_table <- otu_table_original
+
+## ------------------------- summary of statistics ----------------------------
+
+library(tidyverse)
+
+# Function to calculate OTU table statistics
+calculate_otu_stats <- function(otu_table, table_name = "OTU_Table") {
+  
+  # Calculate sample sums (columns)
+  sample_sums <- colSums(otu_table)
+  
+  # Calculate feature sums (rows)
+  feature_sums <- rowSums(otu_table)
+  
+  # Create statistics dataframe
+  stats_df <- data.frame(
+    Metric = c(
+      "Number of samples",
+      "Number of features",
+      "Total frequency",
+      "Median frequency per sample",
+      "3rd quartile frequency per sample",
+      "Mean frequency per sample",
+      "Median frequency per feature",
+      "3rd quartile frequency per feature",
+      "Mean frequency per feature"
+    ),
+    Value = c(
+      ncol(otu_table),                           # Number of samples
+      nrow(otu_table),                           # Number of features
+      sum(otu_table),                            # Total frequency
+      median(sample_sums),                       # Median per sample
+      quantile(sample_sums, 0.75),              # 3rd quartile per sample
+      mean(sample_sums),                         # Mean per sample
+      median(feature_sums),                      # Median per feature
+      quantile(feature_sums, 0.75),             # 3rd quartile per feature
+      mean(feature_sums)                         # Mean per feature
+    )
+  )
+  
+  # Add table name column
+  stats_df$Table <- table_name
+  
+  return(stats_df)
+}
+
+stats <- calculate_otu_stats(otu_table, "OTU_Table")
+
+write.csv(stats, "output_bioproj_prim/statistics/otu_table_statistics.csv", row.names = FALSE)
+
+# Print summary
+print(stats)
+
+## ----------------------------------------------------------------------------
+# Create aggregated genus-level table for most analyses
+taxonomic <- taxonomy_df[, 1]
+otu_table$bac_tax_group <- taxonomic[match(rownames(otu_table), rownames(taxonomy_df))]
+otu_tax <- aggregate(. ~ bac_tax_group, data = otu_table, FUN = sum)
+rownames(otu_tax) <- otu_tax$bac_tax_group
+otu_tax$bac_tax_group <- NULL
+otu_tax <- otu_tax[!grepl("^d__Archaea;", rownames(otu_tax)), ]
+otu_tax <- t(otu_tax)
+otu_tax <- as.data.frame(otu_tax)
+
+################################################################################
+
+# --------------- 1. LOAD AND MERGE
+metadata <- read.delim("data/metadata_160_20260216.txt", row.names = 1, check.names = FALSE)
+
+if ("reads" %in% colnames(metadata)) {
+  metadata <- metadata[metadata$reads != "single", ]
+  message(paste("Filtered metadata for 'single' reads. Remaining rows:", nrow(metadata)))
+} else {
+  warning("'reads' column not found in metadata.")
+}
+
+df <- merge(otu_tax, metadata, by = "row.names")
+
+# Fix row names after merge
+rownames(df) <- df$Row.names
+df$Row.names <- NULL
+
+# --------------- 2. APPLY QUALITY FILTERS (Duplicates & Read Depth)
+
+# --- A. REMOVE DUPLICATE SAMPLES ---
+# Extract only the bacteria abundance columns to check for duplicates
+abundance_cols <- grep("^d__", colnames(df), value = TRUE)
+abundance_matrix <- df[, abundance_cols]
+
+# Check for duplicates based on abundance profile
+is_dup <- duplicated(abundance_matrix)
+
+if (sum(is_dup) > 0) {
+  print(paste("WARNING: Removed", sum(is_dup), "samples with identical bacterial counts."))
+  # Keep only unique rows
+  df <- df[!is_dup, ]
+} else {
+  print("No duplicate samples found.")
+}
+
+# --- B. REMOVE LOW READ COUNT SAMPLES ---
+# Recalculate abundance matrix on the filtered dataframe
+abundance_matrix <- df[, abundance_cols]
+
+# Calculate total reads per sample
+sample_sums <- rowSums(abundance_matrix)
+
+# Define Threshold (e.g., 5000 reads)
+min_reads <- 5000
+keep_samples <- sample_sums >= min_reads
+
+# Print summary of what will be removed
+print("Read Depth Summary:")
+print(summary(sample_sums))
+print(paste("Samples with <", min_reads, "reads removed:", sum(!keep_samples)))
+print(paste("Samples remaining:", sum(keep_samples)))
+
+# Apply Filter
+df <- df[keep_samples, ]
+
+# Check if we lost everything
+if (nrow(df) == 0) stop("Error: All samples were filtered out! Check your data or lower 'min_reads'.")
+
+# ------------------ 3. METADATA CLEANING & FORMATTING
+
+# Clean Diet Labels
+df <- df %>%
+  mutate(diet_1 = trimws(diet_1)) %>%
+  mutate(diet_1 = case_when(
+    diet_1 %in% c("Fruit", "Fruits.", "Fruits") ~ "Fruit",
+    diet_1 %in% c("Fish", "Fishes.", "Fishes") ~ "Fish",
+    diet_1 %in% c("Insect", "Insects", "Insectivore") ~ "Insect",
+    diet_1 %in% c("Flower", "Flowers", "Nectar", "Pollen", "Flower. Nectar") ~ "Fruit",
+    TRUE ~ diet_1
+  )) %>%
+  mutate(cw_diet1 = paste(captive_wild, diet_1, sep = "_")) %>%
+  mutate(cw_diet1_sampletype = paste(captive_wild, diet_1, sample_type, sep = "_"))
+
+# Rename specific taxonomy columns if they exist
+if("genus" %in% colnames(df)) colnames(df)[colnames(df) == "genus"] <- "taxonomic_genus"
+if("species" %in% colnames(df)) colnames(df)[colnames(df) == "species"] <- "taxonomic_species"
+
+df$Diet_type <- df$diet_1
+
+# Quick sanity check
+print(table(df$Diet_type))
+
+# ---------------- 4. PREPARE OUTPUT (METADATA + TAXA)
+
+df_metadata <- df %>%
+  rownames_to_column("sample_id") 
+
+df_metadata <- df_metadata %>%
+  rename(
+    index = sample_id,
+    Common.name_Species = common_name,
+    Diet_type = Diet_type)
+
+print(paste("Final rows:", nrow(df_metadata)))
+
+write.csv(df_metadata, "output/df_taxa_metadata_160.csv", row.names = FALSE)
+
+## -------------------------------------------------------------------------- ##
+## ---- SHAP ANALYSIS
+
+data <- df
+
+# Prepare metadata with CLEAN diet labels (no make.names)
+metadata_df <- data.frame(
+  SampleID = rownames(df),
+  Diet_type = factor(df$diet_1),
+  stringsAsFactors = FALSE
+)
+
+# Extract abundance data (taxonomy columns)
+abundance_table <- data[, grep("d__Bacteria", colnames(data))]
+abundance_table <- rrarefy(abundance_table, sample = 5000)
+
+rownames(abundance_table) <- metadata_df$SampleID
+
+# genus extraction
+extract_genus <- function(t) {
+  if (!grepl("g__", t)) return(NA_character_)
+  g <- sub(".*g__([^;]+).*", "\\1", t)
+  if (g == "" || is.na(g)) return(NA_character_) else return(g)
+}
+genus_names <- sapply(colnames(abundance_table), extract_genus)
+keep <- !is.na(genus_names)
+
+# Aggregate to GENUS level (drop NA genera)
+abundance_table_genus <- rowsum(t(abundance_table[, keep, drop = FALSE]),
+                                group = genus_names[keep], na.rm = TRUE)
+abundance_table_genus <- t(abundance_table_genus)
+
+# EXCLUDE organelle genera from calculations
+abundance_table_genus <- abundance_table_genus[, !(colnames(abundance_table_genus) %in% c("Chloroplast", "Mitochondria")), drop = FALSE]
+
+# Sanity checks
+print(table(metadata_df$Diet_type))
+
+# CLR transformation
+clr_transform <- function(x) {
+  x <- x + 1
+  log(x / exp(mean(log(x))))
+}
+abundance_table_clr <- t(apply(abundance_table_genus, 1, clr_transform))
+
+# Combine with metadata
+rf_data <- cbind(Diet_type = metadata_df$Diet_type, as.data.frame(abundance_table_clr))
+rf_data$Diet_type <- as.factor(rf_data$Diet_type)
+
+# Ensure unique predictor names
+colnames(rf_data) <- make.unique(colnames(rf_data))
+
+# RF Classification
+set.seed(1000)
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  savePredictions = "final"
+)
+rf_model <- train(
+  Diet_type ~ .,
+  data = rf_data,
+  method = "rf",
+  trControl = train_control,
+  ntree = 500,
+  importance = TRUE,
+  metric = "Accuracy"
+)
+print(rf_model)
+
+################################################################################
+## ---------------- TESTING THE EFFECT OF BATCH CORRECTION ------------------ ##
+
+rf_data_bioproj <- cbind(
+  Bioproject = factor(df$bioproject),
+  as.data.frame(abundance_table_clr)
+)
+colnames(rf_data_bioproj) <- make.unique(colnames(rf_data_bioproj))
+
+set.seed(1000)
+rf_model_bioproj <- train(
+  Bioproject ~ .,
+  data      = rf_data_bioproj,
+  method    = "rf",
+  trControl = trainControl(method = "cv", number = 5,
+                           classProbs = TRUE, savePredictions = "final"),
+  ntree     = 500,
+  importance = TRUE,
+  metric    = "Accuracy"
+)
+
+print(rf_model_bioproj)
+print(rf_model_bioproj$results)
+
+# Define the output directory
+output_dir <- "output_bioproj_prim/statistics"
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Extract the results dataframe
+results_df <- rf_model_bioproj$results
+
+# Define the full file path
+output_file <- file.path(output_dir, "rf_model_bioproj_results.csv")
+
+# Write to CSV
+write.csv(results_df, output_file, row.names = FALSE)
+
+print(paste("Results saved to:", output_file))
+
+# If accuracy >> random = batch effect is still there
+contingency <- df %>%
+  count(bioproject, diet_1) %>%
+  pivot_wider(names_from = diet_1, values_from = n, values_fill = 0)
+
+print(contingency)
+
+df %>%
+  count(bioproject, diet_1) %>%
+  ggplot(aes(x = diet_1, y = bioproject, fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n), fontface = "bold") +
+  scale_fill_viridis_c(name = "N Samples") +
+  labs(title = "Distribution of the samples: Bioproject × Diet",
+       x = "Dieta", y = "Bioproject") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11),
+        plot.title = element_text(face = "bold"))
+
+# Heatmap
+df %>%
+  count(bioproject, diet_1) %>%
+  ggplot(aes(x = diet_1, y = bioproject, fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n), fontface = "bold") +
+  scale_fill_viridis_c(name = "N Samples") +
+  labs(title = "Distribution of the samples: Bioproject × Diet",
+       x = "Dieta", y = "Bioproject") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11),
+        plot.title = element_text(face = "bold"))
+
+# 1. CREATE HEATMAP PLOT
+# ---------------------------------------------------------
+library(ggplot2)
+library(dplyr)
+library(viridis)
+
+heatmap_plot <- df %>%
+  count(bioproject, diet_1) %>%
+  ggplot(aes(x = diet_1, y = bioproject, fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n), fontface = "bold") +
+  scale_fill_viridis_c(name = "N Samples") +
+  labs(title = "Distribution of the samples: Bioproject × Diet",
+       x = "Diet", y = "Bioproject") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11),
+        plot.title = element_text(face = "bold"))
+
+# 2. DEFINE OUTPUT SETTINGS
+# ---------------------------------------------------------
+output_dir <- "output_bioproj_prim"
+base_name  <- "distribution_bioprojectxdiet"
+extensions <- c("jpg", "pdf", "tiff")
+
+# Create directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Define dimensions (in inches)
+w <- 10  # Adjusted width for a single plot
+h <- 8   # Adjusted height for a single plot
+
+# 3. EXPORT LOOP
+# ---------------------------------------------------------
+for (ext in extensions) {
+  
+  full_path <- file.path(output_dir, paste0(base_name, ".", ext))
+  
+  # Determine compression for TIFF (NA for others)
+  comp_setting <- if (ext == "tiff") "lzw" else NA
+  
+  # Save the plot
+  ggsave(
+    filename = full_path,
+    plot = heatmap_plot,
+    width = w, 
+    height = h, 
+    dpi = 300, 
+    bg = "white",
+    compression = comp_setting
+  )
+  
+  message(paste("Saved:", full_path))
+}
+
+## -------------------------------------------------------------------------- ##
+# Since the prediction accuracy for Bioproject is high,
+# let's use a different strategy, namely LOBO (leave-one-bioproject-out), 
+# so the training set will consist of all Bioprojects except one, which will be used
+# as the test set. Why? Because I want to achieve high prediction accuracy 
+# even when I introduce new Bioprojects
+
+bioprojects <- unique(df$bioproject)
+results_list <- list()
+
+for (bp in bioprojects) {
+  
+  train_idx <- which(df$bioproject != bp)
+  test_idx  <- which(df$bioproject == bp)
+  
+  train_classes <- unique(rf_data$Diet_type[train_idx])
+  test_classes  <- unique(rf_data$Diet_type[test_idx])
+  
+  if (!all(test_classes %in% train_classes)) {
+    message("Skipping ", bp, ": diet classes dieta not represented in the train")
+    next
+  }
+  
+  train_data <- rf_data[train_idx, ]
+  test_data  <- rf_data[test_idx, ]
+  
+  set.seed(1000)
+  rf_tmp <- randomForest(
+    x          = train_data[, -1],
+    y          = train_data$Diet_type,
+    ntree      = 500,
+    importance = TRUE
+  )
+  
+  preds <- predict(rf_tmp, newdata = test_data[, -1])
+  acc   <- mean(preds == test_data$Diet_type)
+  
+  # Confusion matrix per bioproject
+  cm <- table(Predicted = preds, Observed = test_data$Diet_type)
+  
+  results_list[[bp]] <- data.frame(
+    Bioproject        = bp,
+    N_test            = length(test_idx),
+    Accuracy          = round(acc, 3),
+    Diet_composition  = paste(
+      names(table(test_data$Diet_type)),
+      table(test_data$Diet_type),
+      sep = "=", collapse = " | "
+    )
+  )
+  
+  message(sprintf("%-20s | N=%d | Acc=%.3f | %s",
+                  bp, length(test_idx), acc,
+                  results_list[[bp]]$Diet_composition))
+}
+
+lobocv_results <- bind_rows(results_list)
+
+# Weighted Mean Accuracy 
+weighted_acc <- sum(lobocv_results$Accuracy * lobocv_results$N_test) /
+  sum(lobocv_results$N_test)
+
+message("\nWeighted LOBOCV Accuracy: ", round(weighted_acc, 3))
+print(lobocv_results)
+
+write.csv(lobocv_results,
+          "output_bioproj_prim/statistics/rf_lobocv_results.csv",
+          row.names = FALSE)
+
+### ------ Single-diet bioproject don't test anything meaningful ----------- ###
+# by definition, the model always (or almost always) gets it right
+
+mono_diet_bioproj <- c("Florida_bats", "PRJNA1025871", "PRJNA508738",
+                       "PRJNA923401", "PRJNA506223")
+
+lobocv_multi <- lobocv_results %>%
+  filter(!Bioproject %in% mono_diet_bioproj)
+
+weighted_acc_multi <- sum(lobocv_multi$Accuracy * lobocv_multi$N_test) /
+  sum(lobocv_multi$N_test)
+
+message("Weighted LOBOCV (solo bioprojects multi-dieta): ", 
+        round(weighted_acc_multi, 3))
+
+# This is the most reliable accuracy for evaluating the diet's effectiveness
+# Plot to show different accuracy using all bioproject vs excluding mono-diet bioprojecs
+
+lobocv_plot <- lobocv_results %>%
+  mutate(
+    weighted_contribution = Accuracy * N_test,
+    mono_diet = Bioproject %in% c("Florida_bats", "PRJNA1025871",
+                                  "PRJNA923401", "PRJNA506223"),
+    label = paste0(Bioproject, "\n(N=", N_test, ", Acc=", 
+                   round(Accuracy, 2), ")")
+  ) %>%
+  ggplot(aes(x = reorder(label, Accuracy), 
+             y = Accuracy, 
+             fill = mono_diet)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = weighted_acc, linetype = "dashed", 
+             color = "black", linewidth = 0.8) +
+  geom_hline(yintercept = weighted_acc_multi, linetype = "dashed", 
+             color = "red", linewidth = 0.8) +
+  annotate("text", x = 1.5, y = 0.86, 
+           label = paste0(round(weighted_acc*100,1), "% (all)"), size = 3.5) +
+  annotate("text", x = 1.5, y = 0.57, 
+           label = paste0(round(weighted_acc_multi*100,1), "% (multi-diet)"), color = "red", size = 3.5) +
+  scale_fill_manual(
+    values = c("TRUE" = "#D62728", "FALSE" = "#2E8B57"),
+    labels = c("TRUE" = "Mono-diet", 
+               "FALSE" = "Multi-diet"),
+    name = ""
+  ) +
+  coord_flip(ylim = c(0, 1.05)) +
+  labs(title = "Contribution per bioproject - LOBOCV",
+       #subtitle = "The mono-diet bioprojects lead to artificial mean",
+       x = NULL, y = "Accuracy") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "red"))
+
+
+# Save the plot in multiple formats
+out_dir <- "output_bioproj_prim/"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("contribution_per_bioproj.", ext)),
+    plot = lobocv_plot,
+    width = 10,
+    height = 8,
+    units = "in",
+    dpi = 300
+  )
+}
+
+## ----------- train model using only multi-diet bioprojects ---------------- ##
+
+library(randomForest)
+library(tidyverse)
+library(ggplot2)
+
+# multi-diet bioprojects 
+multi_diet_bp <- c("PRJEB47836", "PRJNA602518",
+                   "PRJNA1012124", "PRJNA1096155",
+                   "PRJNA508738")
+
+
+df_multi <- df %>% filter(bioproject %in% multi_diet_bp)
+
+abundance_sub <- df_multi[, grep("d__Bacteria", colnames(df_multi)),
+                          drop = FALSE]
+
+genus_names_sub <- sapply(colnames(abundance_sub), extract_genus)
+keep_sub <- !is.na(genus_names_sub)
+
+abundance_genus_sub <- rowsum(
+  t(abundance_sub[, keep_sub, drop = FALSE]),
+  group = genus_names_sub[keep_sub],
+  na.rm = TRUE
+)
+abundance_genus_sub <- t(abundance_genus_sub)
+abundance_genus_sub <- abundance_genus_sub[,
+                                           !(colnames(abundance_genus_sub) %in% 
+                                               c("Chloroplast", "Mitochondria")), drop = FALSE]
+
+# CLR
+clr_sub <- t(apply(abundance_genus_sub, 1, clr_transform))
+
+rf_data_sub <- cbind(
+  Diet_type = factor(df_multi$diet_1),
+  as.data.frame(clr_sub)
+)
+colnames(rf_data_sub) <- make.unique(colnames(rf_data_sub))
+rf_data_sub$Diet_type <- as.factor(rf_data_sub$Diet_type)
+
+# Train model
+set.seed(1000)
+
+cv_ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  savePredictions = "final"
+)
+
+rf_final <- train(
+  Diet_type ~ .,
+  data = rf_data_sub,
+  method = "rf",
+  trControl = cv_ctrl,
+  ntree = 500,
+  importance = TRUE,
+  metric = "Accuracy"
+)
+
+#rf_final <- randomForest(
+#  x          = rf_data_sub[, -1],
+#  y          = rf_data_sub$Diet_type,
+#  ntree      = 500,
+#  importance = TRUE,
+#  keep.forest = TRUE
+#)
+
+print(rf_final)
+
+write.csv(rf_data_sub, "output_bioproj_prim/_SHAP/rf_data_sub.csv", row.names = FALSE)
+
+## -------------------------------------------------------------------------- ##
+## ----- SHAP ANALYSIS
+
+library(randomForest)
+library(fastshap)
+library(readr)
+library(dplyr)
+
+# 1. Load Data
+df <- read_csv("output_bioproj_prim/_SHAP/rf_data_sub.csv")
+
+# 2. Prepare X and y
+# Python Logic: X = df.drop(columns=["Diet_type"])
+target_col <- "Diet_type"
+X <- df[, !names(df) %in% target_col]
+y <- as.factor(df[[target_col]])
+
+# 3. TRAIN RANDOM FOREST MODEL
+# -----------------------------------------------------------------------------
+set.seed(1000)
+# ntree=500 matches Python's n_estimators=500
+rf_model <- randomForest(x = X, y = y, ntree = 500, importance = TRUE)
+
+print("Model training complete.")
+
+# 4. EXPORT FEATURE MATRIX (X)
+# -----------------------------------------------------------------------------
+# Save to 'output' folder
+write_csv(X, "output_bioproj_prim/_SHAP/features_160.csv")
+message("Exported: output_bioproj_prim/_SHAP/features_160.csv")
+
+# 5. CALCULATE SHAP VALUES
+# -----------------------------------------------------------------------------
+classes <- levels(y)
+
+for (class_name in classes) {
+  message(paste("Calculating SHAP values for class:", class_name, "..."))
+  
+  # Wrapper function to get probability for the specific class
+  pfun <- function(object, newdata) {
+    probs <- predict(object, newdata = newdata, type = "prob")
+    return(probs[, class_name])
+  }
+  
+  # Calculate SHAP values
+  # nsim controls the approximation accuracy. 
+  # Increase nsim (e.g., 50 or 100) for values closer to Python's TreeExplainer.
+  shap_values <- fastshap::explain(
+    rf_model,
+    X = X,
+    pred_wrapper = pfun,
+    nsim = 10 
+  )
+  
+  # Save to 'output' folder
+  filename <- paste0("output_bioproj_prim/_SHAP/shap_values_160_class_", class_name, ".csv")
+  
+  # Export
+  write_csv(as.data.frame(shap_values), filename)
+  message(paste("Exported:", filename))
+}
+
+## ------------------------ SHAP VISUALIZATION ------------------------------ ##
+#install.packages("shapviz")
+library(shapviz)
+library(readr)
+
+X <- as.matrix(read_csv("output_bioproj_prim/_SHAP/features_160.csv"))
+
+shap0 <- as.matrix(read_csv("output_bioproj_prim/_SHAP/shap_values_160_class_Fish.csv"))
+shap1 <- as.matrix(read_csv("output_bioproj_prim/_SHAP/shap_values_160_class_Fruit.csv"))
+shap2 <- as.matrix(read_csv("output_bioproj_prim/_SHAP/shap_values_160_class_Insect.csv"))
+
+sv_fish   <- shapviz(shap0, X = X)
+sv_fruit  <- shapviz(shap1, X = X)
+sv_insect <- shapviz(shap2, X = X)
+
+sv_importance(sv_fish, kind = "beeswarm")
+sv_importance(sv_fruit, kind = "beeswarm")
+sv_importance(sv_insect, kind = "beeswarm")
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# absolute mean of shap values x features and class 
+df_fish   <- as.data.frame(shap0)   %>% summarise_all(~mean(abs(.))) %>% mutate(Class="Fish")
+df_fruit  <- as.data.frame(shap1)   %>% summarise_all(~mean(abs(.))) %>% mutate(Class="Fruit")
+df_insect <- as.data.frame(shap2)   %>% summarise_all(~mean(abs(.))) %>% mutate(Class="Insect")
+
+shap_bar <- bind_rows(df_fish, df_fruit, df_insect) %>%
+  pivot_longer(cols = -Class, names_to = "Feature", values_to = "Mean_SHAP")
+
+top_features <- shap_bar %>%
+  group_by(Feature) %>%
+  summarise(Total = sum(Mean_SHAP)) %>%
+  arrange(desc(Total)) %>%
+  slice(1:20) %>%
+  pull(Feature)
+
+shap_bar_top <- shap_bar %>% filter(Feature %in% top_features)
+
+shap_feature <- ggplot(shap_bar_top, aes(x = reorder(Feature, Mean_SHAP), y = Mean_SHAP, fill = Class)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "",
+    x = "Feature",
+    y = "Mean |SHAP|"
+  ) +
+  scale_fill_brewer(palette = "Set2")
+
+## -------------------------- COMPOSITE FIGURE ------------------------------ ##
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(shapviz)   
+library(patchwork) 
+
+# 1. DEFINE COLORS
+# ---------------------------------------------------------
+diet_colors <- c(
+  "Insect" = "#ff5e2b",
+  "Blood"  = "#ba0970",
+  "Fruit"  = "#2E8B57",
+  "Fish"   = "#303F9F"
+)
+
+# 2. GENERATE INDIVIDUAL PLOTS (Beeswarm)
+# ---------------------------------------------------------
+# We capture the plots into variables p1, p2, p3
+p1 <- sv_importance(sv_fish, kind = "beeswarm") + ggtitle("Fish Class Importance")
+p2 <- sv_importance(sv_fruit, kind = "beeswarm") + ggtitle("Fruit Class Importance")
+p3 <- sv_importance(sv_insect, kind = "beeswarm") + ggtitle("Insect Class Importance")
+
+# 3. GENERATE SUMMARY BAR PLOT (Aggregated)
+# ---------------------------------------------------------
+
+# Create dataframes from shap values (shap0, shap1, shap2 must exist in environment)
+df_fish   <- as.data.frame(shap0)   %>% summarise_all(~mean(abs(.))) %>% mutate(Class="Fish")
+df_fruit  <- as.data.frame(shap1)   %>% summarise_all(~mean(abs(.))) %>% mutate(Class="Fruit")
+df_insect <- as.data.frame(shap2)   %>% summarise_all(~mean(abs(.))) %>% mutate(Class="Insect")
+
+# Combine and pivot
+shap_bar <- bind_rows(df_fish, df_fruit, df_insect) %>%
+  pivot_longer(cols = -Class, names_to = "Feature", values_to = "Mean_SHAP")
+
+# Calculate totals to filter top 20
+top_features_list <- shap_bar %>%
+  group_by(Feature) %>%
+  summarise(Total = sum(Mean_SHAP)) %>%
+  arrange(desc(Total)) %>%
+  slice(1:20) %>%
+  pull(Feature)
+
+# Filter data for plotting
+shap_bar_top <- shap_bar %>% 
+  filter(Feature %in% top_features_list)
+
+# Create the Feature Plot (p4) using YOUR colors
+p4 <- ggplot(shap_bar_top, aes(x = reorder(Feature, Mean_SHAP), y = Mean_SHAP, fill = Class)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  coord_flip() +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Top 20 Features Summary",
+    x = "Feature",
+    y = "Mean |SHAP|"
+  ) +
+  scale_fill_manual(values = diet_colors) # <--- UPDATED HERE
+
+# 4. COMBINE PLOTS INTO 2x2 PANEL
+# ---------------------------------------------------------
+# Using patchwork: (p1 | p2) / (p3 | p4) creates a 2x2 grid
+combined_plot <- (p1 | p2) / (p3 | p4) +
+  plot_annotation(tag_levels = 'A') 
+
+print(combined_plot)
+
+# 5. EXPORT
+# ---------------------------------------------------------
+# Define output path (modify as needed)
+output_dir <- "output_bioproj_prim"
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+base_filename <- file.path(output_dir, "SHAP_panel")
+w <- 16
+h <- 12
+
+ggsave(paste0(base_filename, ".jpg"), combined_plot, width = w, height = h, dpi = 300, bg = "white")
+
+ggsave(paste0(base_filename, ".pdf"), combined_plot, width = w, height = h, dpi = 300, bg = "white")
+
+ggsave(paste0(base_filename, ".tiff"), combined_plot, width = w, height = h, dpi = 300, bg = "white", compression = "lzw")
+
+message("Plots exported successfully to ", output_dir)
