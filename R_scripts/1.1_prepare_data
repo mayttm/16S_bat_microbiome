@@ -14,15 +14,18 @@ library(patchwork)
 library(cowplot)
 
 # data preparation
-setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
-#setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+# data preparation
+#setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
 taxonomy_df <- read.delim("data/taxonomy.tsv", row.names = 1, check.names = FALSE)
 otu_table_original <- read.delim("data/otu_table_corrected_bioproj_primer.txt", row.names = 1, check.names = FALSE)
-#otu_table_original <- read.delim("data/otu_table_corrected_primer_bioproj.txt", row.names = 1, check.names = FALSE)
 otu_table <- otu_table_original
 
-## ------------------------- summary of statistics ----------------------------
+#asv tables for reporting the effects of filtering
+otu_table_filtered_after <- read.delim("data/otu_table_filtered_after_global_filter.txt", row.names = 1, check.names = FALSE)
+otu_table_filtered_before <- read.delim("data/otu_table_filtered_before_global_filter.txt", row.names = 1, check.names = FALSE)
 
+## ------------------------- summary of statistics ----------------------------
 library(tidyverse)
 
 # Function to calculate OTU table statistics
@@ -67,11 +70,16 @@ calculate_otu_stats <- function(otu_table, table_name = "OTU_Table") {
 }
 
 stats <- calculate_otu_stats(otu_table, "OTU_Table")
+stats_filtered_after <- calculate_otu_stats(otu_table_filtered_after, "OTU_Table_Filtered_After")
+stats_filtered_before <- calculate_otu_stats(otu_table_filtered_before, "OTU_Table_Filtered_Before")
 
 write.csv(stats, "output/otu_table_statistics.csv", row.names = FALSE)
+write.csv(stats_filtered_after, "output/otu_table_statistics_filtered_after.csv", row.names = FALSE)
+write.csv(stats_filtered_before, "output/otu_table_statistics_filtered_before.csv", row.names = FALSE)
 
-# Print summary
 print(stats)
+print(stats_filtered_before)
+print(stats_filtered_after)
 
 ## ----------------------------------------------------------------------------
 # Create aggregated genus-level table for most analyses
