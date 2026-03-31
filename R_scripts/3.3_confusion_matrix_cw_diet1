@@ -12,164 +12,6 @@ library(dplyr)
 library(ggplot2)
 library(tibble)
 
-# Function to generate confusion matrix plot
-make_confusion_plot <- function(data, remove_outliers = TRUE, plot_title = "") {
-  
-  # 1. Clean Data & Outliers
-  if (remove_outliers) {
-    outliers <- c("K058683-R", "K058706-R", "K058789-R", "K058689-R", "K058814-R", "K058785-R")
-    data <- data %>% filter(!index %in% outliers)
-  }
-  
-  # 2. Prepare Metadata & Response Variable
-  # make.names is crucial here because Random Forest formulas hate spaces/special chars
-  clean_diet <- make.names(factor(data$cw_diet1))
-  
-  metadata <- data.frame(
-    SampleID = data$index,
-    cw_diet1 = factor(clean_diet)
-  )
-  
-  # 3. Extract Abundance Data
-  # We assume abundance columns contain "d__Bacteria"
-  # Check if we have columns to work with
-  abund_cols <- grep("d__Bacteria", colnames(data))
-  if(length(abund_cols) == 0) stop("No columns containing 'd__Bacteria' found.")
-  
-  abundance_table <- data[, abund_cols]
-  rownames(abundance_table) <- metadata$SampleID
-  
-  # 4. Extract Family Names & Aggregate
-  extract_family <- function(tax_string) {
-    # Looks for g__ first, if not then f__
-    if (grepl("f__", tax_string)) {
-      # Extract text between f__ and the next ; or end of string
-      sub(".*;f__([^;]+).*", "\\1", tax_string)
-    } else {
-      "Unclassified"
-    }
-  }
-  
-  # Get family names for every column
-  family_names <- sapply(colnames(abundance_table), extract_family)
-  
-  # Transpose so taxa are rows, sum by family, then transpose back
-  # rowsum requires the aggregation group (family_names) to match the number of rows
-  t_abundance <- t(abundance_table)
-  abundance_table_family <- rowsum(t_abundance, group = family_names, na.rm = TRUE)
-  
-  # Transpose back so Samples are Rows
-  abundance_table_family <- t(abundance_table_family)
-  
-  # 5. CLR Transformation
-  # CLR requires handling zeros. Adding 1 is a simple pseudo-count method.
-  clr_transform <- function(x) {
-    x <- x + 1
-    log(x) - mean(log(x)) # Standard CLR formula
-  }
-  
-  abundance_table_clr <- as.data.frame(t(apply(abundance_table_family, 1, clr_transform)))
-  
-  # 6. Prepare Data for Random Forest
-  # Combine the response variable (cw_diet1) with the features
-  rf_data <- cbind(cw_diet1 = metadata$cw_diet1, abundance_table_clr)
-  
-  # 7. Train Random Forest
-  set.seed(1000)
-  
-  # Setup Cross Validation
-  ctrl <- trainControl(
-    method = "cv", 
-    number = 5, 
-    classProbs = TRUE, 
-    savePredictions = "final"
-  )
-  
-  rf_model <- train(
-    cw_diet1 ~ ., 
-    data = rf_data,
-    method = "rf",
-    trControl = ctrl,
-    ntree = 500, 
-    metric = "Accuracy"
-  )
-  
-  # 8. Generate Confusion Matrix
-  # Extract predictions from the 'final' hold-out fold
-  cv_preds <- rf_model$pred
-  
-  # Ensure the factor levels match the model's levels exactly
-  # (This fixes the "overlap" error)
-  obs_levels <- levels(rf_data$cw_diet1)
-  
-  # Create the matrix
-  conf_matrix_cv <- confusionMatrix(
-    data = factor(cv_preds$pred, levels = obs_levels), 
-    reference = factor(cv_preds$obs, levels = obs_levels)
-  )
-  
-  # Convert to dataframe for plotting
-  cm_df <- as.data.frame(conf_matrix_cv$table)
-  
-  # 9. Calculate Ratios for Heatmap
-  cm_df <- cm_df %>%
-    group_by(Reference) %>%
-    mutate(
-      Total = sum(Freq),
-      Ratio = Freq / Total,
-      Ratio = ifelse(is.nan(Ratio), 0, Ratio), 
-      Label = sprintf("%.2f", Ratio)
-    ) %>%
-    ungroup()
-  
-  # 10. Create Plot
-  p <- ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Ratio)) +
-    geom_tile(color = "white", linewidth = 0.6) +
-    geom_text(aes(label = Label),
-              color = ifelse(cm_df$Ratio > 0.5, "black", "white"),
-              size = 5, fontface = "bold") +
-    scale_fill_viridis_c(name = "Ratio", labels = function(x) sprintf("%.2f", x)) +
-    labs(x = "Expected Diet", y = "Predicted Diet", title = plot_title) +
-    theme_minimal(base_size = 14) +
-    theme(
-      plot.margin = ggplot2::margin(t = 20, r = 10, b = 10, l = 10, unit = "pt"),
-      panel.grid = element_blank(),
-      axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
-      axis.text.y = element_text(face = "bold"),
-      axis.title = element_text(face = "bold"),
-      legend.title = element_text(face = "bold")
-    )
-  
-  return(p)
-}
-
-# ---------
-
-library(readr)
-library(ggplot2)
-library(patchwork)
-
-data <- read_csv("output/df_taxa_metadata_160.csv")
-
-conf_mat_plot_cw_diet1 <- make_confusion_plot(data, remove_outliers = TRUE, plot_title = "")
-
-print(conf_mat_plot_cw_diet1)
-
-# Save the plot in multiple formats
-out_dir <- "output_bioproj_prim"
-dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-
-for (ext in c("jpg", "pdf", "tiff")) {
-  ggsave(
-    filename = file.path(out_dir, paste0("confusion_matrix_cw_diet1.", ext)),
-    plot = conf_mat_plot_cw_diet1,
-    width = 10,
-    height = 8,
-    units = "in",
-    dpi = 300
-  )
-}
-
 ## ------------------- confusion matrix counts ---------------------------------
 
 make_confusion_plot_counts <- function(data, remove_outliers = TRUE, plot_title = "") {
@@ -274,7 +116,7 @@ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 for (ext in c("jpg", "pdf", "tiff")) {
   ggsave(
     filename = file.path(out_dir, paste0("confusion_matrix_cw_diet1_counts.", ext)),
-    plot = conf_mat_plot_diet1_counts,
+    plot = conf_mat_plot_cw_diet1_counts,
     width = 10,
     height = 8,
     units = "in",
@@ -395,3 +237,281 @@ wrong_preds <- export_misclassified_cw_diet1(data,
                                              remove_outliers = TRUE,
                                              out_dir = "output_bioproj_prim", 
                                              filename = "misclassified_samples_cw_diet1.csv")
+
+## ========================================================================== ##
+## ------------- confusion matrix (only multidiet bioprojects) -------------- ##
+
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(vegan) 
+
+# 1. Filter for multi-diet bioprojects
+multi_diet_bp <- c("PRJEB47836", "PRJNA602518",
+                   "PRJNA1012124", "PRJNA1096155",
+                   "PRJNA508738")
+
+df_multi <- df %>% filter(bioproject %in% multi_diet_bp)
+
+# 2. Extract Abundance Data
+abundance_sub <- df_multi[, grep("d__Bacteria", colnames(df_multi)), drop = FALSE]
+
+set.seed(1000)
+abundance_sub <- rrarefy(abundance_sub, sample = 5000)
+
+# 3. Define Helper Functions (extract_genus & clr_transform)
+extract_genus <- function(t) {
+  if (!grepl("g__", t)) return(NA_character_)
+  g <- sub(".*g__([^;]+).*", "\\1", t)
+  if (g == "" || is.na(g)) return(NA_character_) else return(g)
+}
+
+clr_transform <- function(x) {
+  # Add pseudocount of 1 to handle zeros
+  x <- x + 1
+  log(x / exp(mean(log(x))))
+}
+
+# 4. Aggregate to Genus Level
+# Note: abundance_sub is now a matrix from rrarefy, so we ensure column names are preserved
+genus_names_sub <- sapply(colnames(abundance_sub), extract_genus)
+keep_sub <- !is.na(genus_names_sub)
+
+abundance_genus_sub <- rowsum(
+  t(abundance_sub[, keep_sub, drop = FALSE]),
+  group = genus_names_sub[keep_sub],
+  na.rm = TRUE
+)
+abundance_genus_sub <- t(abundance_genus_sub)
+
+# 5. Remove Organelles
+abundance_genus_sub <- abundance_genus_sub[,
+                                           !(colnames(abundance_genus_sub) %in%
+                                               c("Chloroplast", "Mitochondria")), drop = FALSE]
+
+# 6. Apply CLR Transformation
+# Note: CLR is applied AFTER rarefaction and aggregation
+clr_sub <- t(apply(abundance_genus_sub, 1, clr_transform))
+
+# 7. Prepare Final Training Data
+# CHANGED: Replaced Diet_type (sourced from diet_1) with cw_diet1
+rf_data_sub <- cbind(
+  cw_diet1 = factor(df_multi$cw_diet1), 
+  as.data.frame(clr_sub)
+)
+
+# Ensure unique column names and correct factor levels
+colnames(rf_data_sub) <- make.unique(colnames(rf_data_sub))
+# CHANGED: Update factor conversion to match new column name
+rf_data_sub$cw_diet1 <- as.factor(rf_data_sub$cw_diet1)
+
+# 8. Train the Final Model with 5-Fold CV using Caret
+set.seed(1000)
+
+cv_ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  savePredictions = "final"
+)
+
+rf_final <- train(
+  cw_diet1 ~ .,
+  data = rf_data_sub,
+  method = "rf",
+  trControl = cv_ctrl,
+  ntree = 500,
+  importance = TRUE,
+  metric = "Accuracy"
+)
+
+#rf_final <- randomForest(
+#  x          = rf_data_sub[, -1],
+#  y          = rf_data_sub$cw_diet1, 
+#  ntree      = 500,
+#  importance = TRUE,
+#  keep.forest = TRUE
+#)
+
+print(rf_final)
+print(rf_final$results)
+
+# Define the output directory
+output_dir <- "output_bioproj_prim/statistics"
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Extract the results (Accuracy, Kappa, mtry, etc.)
+rf_results_df <- rf_final$results
+
+rf_results_df$Best_Model <- ifelse(
+  rf_results_df$mtry == rf_final$bestTune$mtry, 
+  "TRUE", 
+  "FALSE"
+)
+
+# Define the file path
+output_file <- file.path(output_dir, "rf_model_performance_cw_diet1.csv")
+
+# Write to CSV
+write.csv(rf_results_df, output_file, row.names = FALSE)
+
+print(paste("Model statistics saved to:", output_file))
+
+## --------------- making confusion matrix plot ----------------------------- ##
+
+make_confusion_plot_caret <- function(model, plot_title = "") {
+  
+  # 1. Check if predictions exist
+  if (is.null(model$pred)) {
+    stop("No predictions found. Ensure 'savePredictions' was set to 'final' or TRUE in trainControl.")
+  }
+  
+  # 2. Extract Predictions and Observations
+  results <- model$pred
+  if ("mtry" %in% colnames(results)) {
+    results <- results[results$mtry == model$bestTune$mtry, ]
+  }
+  
+  predicted_classes <- results$pred
+  observed_classes  <- results$obs
+  
+  # Ensure factors have the same levels
+  all_levels <- levels(observed_classes)
+  predicted_classes <- factor(predicted_classes, levels = all_levels)
+  
+  # 3. Create confusion matrix table
+  cm_table <- table(Prediction = predicted_classes, Reference = observed_classes)
+  cm_df <- as.data.frame(cm_table)
+  
+  # 4. Calculate Ratios
+  cm_df <- cm_df %>%
+    group_by(Reference) %>%
+    mutate(
+      Total = sum(Freq),
+      Ratio = Freq / Total,
+      Label = sprintf("%.2f", Ratio)
+    ) %>%
+    ungroup()
+  
+  # 5. Create plot
+  ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Ratio)) +
+    geom_tile(color = "white", linewidth = 0.6) +
+    geom_text(aes(label = Label),
+              color = ifelse(cm_df$Ratio > 0.5, "black", "white"),
+              size = 5, fontface = "bold") +
+    scale_fill_viridis_c(name = "Ratio", labels = function(x) sprintf("%.2f", x)) +
+    labs(x = "Expected Captivity Status and Diet", y = "Predicted Captivity Status and Diet", title = plot_title) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.margin = ggplot2::margin(t = 20, r = 10, b = 10, l = 10, unit = "pt"),
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+      axis.text.y = element_text(face = "bold"),
+      axis.title.x = element_text(size = 12, face = "bold"),
+      axis.title.y = element_text(size = 12, face = "bold"),
+      legend.title = element_text(face = "bold")
+    )
+}
+
+conf_mat_plot_cw_diet1_multi <- make_confusion_plot_caret(rf_final, plot_title = "")
+print(conf_mat_plot_cw_diet1_multi)
+
+out_dir <- "output_bioproj_prim/"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("confusion_matrix_cw_diet1_multi.", ext)),
+    plot = conf_mat_plot_cw_diet1_multi,
+    width = 10,
+    height = 8,
+    units = "in",
+    dpi = 300
+  )
+}
+
+
+## ------------ 1.4) identifying misclassified samples
+
+library(tidyverse)
+library(caret)
+
+export_misclassified_caret <- function(model, 
+                                       original_data, 
+                                       out_dir = "output_bioproj_prim", 
+                                       filename = "misclassified_samples_cw_diet1.csv") {
+  
+  # --- 1. SETUP OUTPUT DIRECTORY ---
+  if (!dir.exists(out_dir)) {
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  }
+  
+  # --- 2. EXTRACT PREDICTIONS ---
+  if (is.null(model$pred)) {
+    stop("No predictions found in model object. Ensure 'savePredictions' was set to 'final' or TRUE.")
+  }
+  
+  pred_results <- model$pred
+  
+  # Filter for the best model only
+  if ("mtry" %in% colnames(pred_results)) {
+    pred_results <- pred_results[pred_results$mtry == model$bestTune$mtry, ]
+  }
+  
+  # --- 3. IDENTIFY MISCLASSIFIED SAMPLES ---
+  # Filter rows where Prediction does not match Observation
+  misclassified_rows <- pred_results[pred_results$pred != pred_results$obs, ]
+  
+  if (nrow(misclassified_rows) == 0) {
+    message("Great news! The model achieved 100% accuracy. No misclassified samples to export.")
+    return(NULL)
+  }
+  
+  # --- 4. MATCH BACK TO ORIGINAL METADATA ---
+  # Use 'rowIndex' to pull correct metadata rows
+  original_indices <- misclassified_rows$rowIndex
+  original_subset <- original_data[original_indices, ]
+  
+  # --- 5. HANDLE SAMPLE ID ---
+  # Try to find a robust Sample ID
+  if (!is.null(original_subset$index)) {
+    sample_ids <- original_subset$index
+  } else if (!is.null(original_subset$sample_id)) {
+    sample_ids <- original_subset$sample_id
+  } else if (!is.null(rownames(original_subset))) {
+    sample_ids <- rownames(original_subset)
+  } else {
+    sample_ids <- paste0("Row_", original_indices)
+  }
+  
+  final_output <- data.frame(
+    SampleID       = sample_ids,
+    Observed_Diet  = misclassified_rows$obs,
+    Predicted_Diet = misclassified_rows$pred,
+    Bioproject     = original_subset$bioproject,
+    cw_diet1       = original_subset$cw_diet1,
+    Sample_Type    = original_subset$sample_type,
+    stringsAsFactors = FALSE
+  )
+  
+  # --- 6. EXPORT ---
+  full_path <- file.path(out_dir, filename)
+  write.csv(final_output, full_path, row.names = FALSE)
+  
+  message(paste("Export complete. Found", nrow(final_output), "misclassified samples."))
+  message(paste("Saved to:", full_path))
+  
+  return(final_output)
+}
+
+# Run the function
+wrong_preds <- export_misclassified_caret(
+  model = rf_final,
+  original_data = df_multi,
+  out_dir = "output_bioproj_prim/statistics", 
+  filename = "misclassified_samples_cw_diet1_multidiet.csv"
+)
