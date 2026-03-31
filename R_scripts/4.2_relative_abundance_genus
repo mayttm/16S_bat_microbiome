@@ -123,6 +123,141 @@ long_data <- final_data %>%
                names_to = "Genus", values_to = "Abundance") %>%
   mutate(Genus = factor(Genus, levels = c(top_genera, "Other")))
 
+## ---------------------- new steps ----------------------------------------- ##
+
+# #setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
+data <- read_csv("output/df_taxa_metadata_160.csv")
+
+library(tidyverse)
+library(RColorBrewer)
+library(vegan) 
+
+#------------- 1. SETUP & DATA LOADING
+if (!exists("out_dir")) { out_dir <- "output" } 
+if (!dir.exists(out_dir)) { dir.create(out_dir) }
+
+# Extract abundance columns for checking
+tax_cols_check <- grep("^d__", names(data), value = TRUE)
+abundance_check <- data[, tax_cols_check]
+
+# Filter 1: Remove exact duplicate rows (Technical error check)
+is_not_dup <- !duplicated(abundance_check)
+data <- data[is_not_dup, ]
+print(paste("Removed", sum(!is_not_dup), "exact duplicate samples."))
+
+# Re-extract abundance and metadata
+tax_cols <- grep("^d__", names(data), value = TRUE)
+abundance <- data[, tax_cols]
+sample_ids <- data$index
+diet_type <- data$Diet_type
+species_name <- data$taxonomic_species
+animals <- data$Common.name_Species
+bioproject <- data$bioproject
+
+## -------------- 2. EXTRACT GENUS NAMES (User Provided Logic)
+
+genus_names <- sapply(tax_cols, function(col) {
+  parts <- unlist(strsplit(col, ";"))
+  parts <- trimws(parts)
+  g_part <- parts[grep("^g__", parts)]
+  if (length(g_part) == 0) return("Unclassified")
+  genus <- sub("^g__", "", g_part)
+  if (genus == "" || genus == "uncultured") return("Unclassified")
+  return(genus)
+})
+
+# Check the extraction
+print(head(table(genus_names)))
+
+## -------------------- 3. AGGREGATION & FILTERING
+
+# Aggregate to GENUS level
+abundance_t <- t(abundance)
+abundance_genus <- rowsum(abundance_t, group = genus_names, reorder = FALSE)
+
+# Filter 2: Remove Contaminants (Chloroplast/Mitochondria)
+abundance_genus <- abundance_genus[!rownames(abundance_genus) %in% c("Chloroplast", "Mitochondria"), ]
+
+abundance_genus <- t(abundance_genus)
+rownames(abundance_genus) <- sample_ids
+
+abundance_genus_df <- as.data.frame(abundance_genus)
+
+if ("Unclassified" %in% colnames(abundance_genus_df)) {
+  abundance_genus_df$Unclassified <- NULL 
+}
+
+##--- Filter 3: CRITICAL READ DEPTH FILTER
+row_sums <- rowSums(abundance_genus_df)
+
+print("Read count summary before filtering:")
+print(summary(row_sums))
+
+# Set threshold (Keep consistent with Family level analysis)
+min_reads <- 5000
+valid_rows <- row_sums >= min_reads
+
+print(paste("Total samples:", length(row_sums)))
+print(paste("Valid samples (>= ", min_reads, " reads):", sum(valid_rows)))
+
+if(sum(valid_rows) == 0) {
+  stop("Error: All samples were filtered out! Try lowering 'min_reads'.")
+}
+
+# Apply the filter (Remove samples with < 5000 reads)
+abundance_genus_df <- abundance_genus_df[valid_rows, ]
+diet_type <- diet_type[valid_rows]
+species_name <- species_name[valid_rows]
+animals <- animals[valid_rows]
+sample_ids <- sample_ids[valid_rows]
+bioproject <- bioproject[valid_rows]
+
+# --- RAREFACTION TO 5000 ---
+# Now that all remaining samples have >= 5000 reads, we rarefy them to exactly 5000.
+# This ensures the "Top 20" taxa are selected based on normalized effort.
+print("Applying rarefaction to 5000 reads...")
+set.seed(1000)
+abundance_genus_df <- rrarefy(abundance_genus_df, sample = 5000)
+# rrarefy returns a matrix, convert back to df if needed, though arithmetic works on matrices
+abundance_genus_df <- as.data.frame(abundance_genus_df)
+
+
+## ----------------- 4. NORMALIZATION & PREPARATION
+
+# Normalize to relative abundance (%)
+# Note: Since we rarefied to 5000, rowSums will be 5000 for everyone.
+# 5000 / 5000 * 100 = 100%.
+abundance_genus_rel <- as.data.frame(abundance_genus_df / rowSums(abundance_genus_df) * 100)
+
+# Identify numeric columns (the bacteria)
+bacteria_cols <- sapply(abundance_genus_rel, is.numeric)
+
+# Get top 20 Genera
+overall_top <- colSums(abundance_genus_rel[, bacteria_cols])
+top_genera <- names(sort(overall_top, decreasing = TRUE)[1:20])
+
+print("Top 20 Genera found:")
+print(top_genera)
+
+# Calculate 'Other' category
+top_data <- abundance_genus_rel[, top_genera, drop = FALSE]
+other <- 100 - rowSums(top_data)
+final_data <- cbind(top_data, Other = other)
+
+# Add metadata
+final_data$Sample <- sample_ids
+final_data$Diet_type <- factor(diet_type, levels = c("Fish", "Insect", "Fruit", "Blood"))
+final_data$Species <- species_name
+final_data$Animal <- animals
+final_data$BioProject <- bioproject
+
+# Pivot to long format
+long_data <- final_data %>%
+  pivot_longer(cols = -c(Sample, Diet_type, Species, Animal, BioProject),
+               names_to = "Genus", values_to = "Abundance") %>%
+  mutate(Genus = factor(Genus, levels = c(top_genera, "Other")))
+
 # ------------------- 5. EXPORT GENUS SUMMARY TABLE ----------------------------
 library(dplyr)
 library(tidyr)
@@ -168,59 +303,31 @@ genus_colors <- colorRampPalette(brewer.pal(9, "Set1"))(n_taxa)
 names(genus_colors) <- c(top_genera, "Other")
 genus_colors["Other"] <- "grey70"
 
-# --- Genus Color Assignments based on Family ---
-# Family: Aeromonadaceae (#AEC7E8)
-if("Aeromonas" %in% names(genus_colors)) genus_colors["Aeromonas"] <- "#AEC7E8"
-
-# Family: Bacillaceae (#ebeb36)
+if("Actinobacillus" %in% names(genus_colors)) genus_colors["Actinobacillus"] <- "#f5bb1d"
+if("Escherichia-Shigella" %in% names(genus_colors)) genus_colors["Escherichia-Shigella"] <- "#D62728"
+if("Helicobacter" %in% names(genus_colors)) genus_colors["Helicobacter"] <- "#2b7ced"
+if("Cetobacterium" %in% names(genus_colors)) genus_colors["Cetobacterium"] <- "#ff63e2"
 if("Bacillus" %in% names(genus_colors)) genus_colors["Bacillus"] <- "#ebeb36"
-
-# Family: Bacteroidaceae (#24bfa3)
-if("Bacteroides" %in% names(genus_colors)) genus_colors["Bacteroides"] <- "#24bfa3"
-
-# Family: Burkholderiaceae (#9467bd)
-if("Burkholderia-Caballeronia-Paraburkholderia" %in% names(genus_colors)) genus_colors["Burkholderia-Caballeronia-Paraburkholderia"] <- "#d94ce6"
-if("Cupriavidus" %in% names(genus_colors)) genus_colors["Cupriavidus"] <- "#8a1184"
-
-# Family: Clostridiaceae (#FF7F0E)
-if("Clostridium_sensu_stricto_1"            %in% names(genus_colors)) genus_colors["Clostridium_sensu_stricto_1"] <- "#FF7F0E"
-
-# Family: Corynebacteriaceae (#FF4500)
-if("Corynebacterium"                        %in% names(genus_colors)) genus_colors["Corynebacterium"] <- "#FF4500"
-
-# Family: Enterobacteriaceae (#D62728)
-if("Escherichia-Shigella"                   %in% names(genus_colors)) genus_colors["Escherichia-Shigella"] <- "#D62728"
-
-# Family: Enterococcaceae (#17BECF)
-if("Enterococcus"                           %in% names(genus_colors)) genus_colors["Enterococcus"] <- "#54ecf7"
-
-# Family: Fusobacteriaceae (#E377C2)
-if("Cetobacterium"                          %in% names(genus_colors)) genus_colors["Cetobacterium"] <- "#ff63e2"
-
-# Family: Hafniaceae (#8C564B)
-if("Hafnia-Obesumbacterium"                 %in% names(genus_colors)) genus_colors["Hafnia-Obesumbacterium"] <- "#8C564B"
-if("Edwardsiella"                           %in% names(genus_colors)) genus_colors["Edwardsiella"] <- "#e39b8d"
-
-# Family: Helicobacteraceae (#2b7ced)
-if("Helicobacter"                           %in% names(genus_colors)) genus_colors["Helicobacter"] <- "#2b7ced"
-
-# Family: Morganellaceae (#FF9896)
-if("Morganella"                             %in% names(genus_colors)) genus_colors["Morganella"] <- "#FF9896"
-if("Proteus"                                %in% names(genus_colors)) genus_colors["Proteus"] <- "#FF9896"
-
-# Family: Mycoplasmataceae (#20a10a)
-if("Mycoplasma"                            %in% names(genus_colors)) genus_colors["Mycoplasma"] <- "#20a10a"
-
-# Family: Pasteurellaceae (#f5bb1d)
-if("Actinobacillus"                        %in% names(genus_colors)) genus_colors["Actinobacillus"] <- "#f5bb1d"
-
-# Family: Staphylococcaceae (#ad4b75)
-if("Staphylococcus"                        %in% names(genus_colors)) genus_colors["Staphylococcus"] <- "#ad4b75"
-
-# Family: Streptococcaceae (#8760d6)
-if("Lactococcus"                           %in% names(genus_colors)) genus_colors["Lactococcus"] <- "#8760d6"
-if("Streptococcus"                         %in% names(genus_colors)) genus_colors["Streptococcus"] <- "#4d1991"
-
+if("Lactococcus" %in% names(genus_colors)) genus_colors["Lactococcus"] <- "#8760d6"
+if("Mycoplasma" %in% names(genus_colors)) genus_colors["Mycoplasma"] <- "#bf658c"
+if("Enterococcus" %in% names(genus_colors)) genus_colors["Enterococcus"] <- "#54ecf7"
+if("Burkholderia-Caballeronia-Paraburkholderia" %in% names(genus_colors)) genus_colors["Burkholderia-Caballeronia-Paraburkholderia"] <- "#0d4f22"
+if("Clostridium_sensu_stricto_1" %in% names(genus_colors)) genus_colors["Clostridium_sensu_stricto_1"] <- "#ff7a19"
+if("Candidatus_Arthromitus" %in% names(genus_colors)) genus_colors["Candidatus_Arthromitus"] <- "#8c564b"
+if("Ureaplasma" %in% names(genus_colors)) genus_colors["Ureaplasma"] <- "#426c99"
+if("Proteus" %in% names(genus_colors)) genus_colors["Proteus"] <- "#FF9896"
+if("Streptococcus" %in% names(genus_colors)) genus_colors["Streptococcus"] <- "#4d1991"
+if("Corynebacterium" %in% names(genus_colors)) genus_colors["Corynebacterium"] <- "#c4310c"
+if("Morganella" %in% names(genus_colors)) genus_colors["Morganella"] <- "#c49c94"
+if("Staphylococcus" %in% names(genus_colors)) genus_colors["Staphylococcus"] <- "#ad4b75"
+if("Photobacterium" %in% names(genus_colors)) genus_colors["Photobacterium"] <- "#0c3896"
+if("Paraclostridium" %in% names(genus_colors)) genus_colors["Paraclostridium"] <- "#7f7f7f"
+if("Orbus" %in% names(genus_colors)) genus_colors["Orbus"] <- "#bcbd22"
+if("Edwardsiella" %in% names(genus_colors)) genus_colors["Edwardsiella"] <- "#942134"
+if("Hafnia-Obesumbacterium" %in% names(genus_colors)) genus_colors["Hafnia-Obesumbacterium"] <- "#13d450"
+if("Bacteroides" %in% names(genus_colors)) genus_colors["Bacteroides"] <- "#05b5a1"
+if("Serratia" %in% names(genus_colors)) genus_colors["Serratia"] <- "#f5bfdb"
+if("Romboutsia" %in% names(genus_colors)) genus_colors["Romboutsia"] <- "#ad098a"
 
 abundance_genus_plot <- ggplot(long_data, aes(x = Sample, y = Abundance, fill = Genus)) +
   geom_col(width = 1) +
