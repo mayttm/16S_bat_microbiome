@@ -6,11 +6,11 @@ library(ggpubr)
 combined_plots_cw_diet1 <- ggarrange(
   alpha_plots_cw_diet1_sig,
   beta_plots_cw_diet1,
-  conf_mat_plot_cw_diet1,
+  conf_mat_plot_cw_diet1_multi,
   ncol = 1, 
   nrow = 3,
   labels = c("A", "B", "C"),
-  heights = c(2, 1, 1) 
+  heights = c(1.7, 1, 0.9) 
 )
 
 # Display the combined plot
@@ -22,7 +22,7 @@ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 for (ext in c("jpg", "pdf", "tiff")) {
   ggsave(
-    filename = file.path(out_dir, paste0("fig2_cw_diet1_panel.", ext)),
+    filename = file.path(out_dir, paste0("fig2_cw_diet1_panel_ver2.", ext)),
     plot = combined_plots_cw_diet1,
     width = 14,
     height = 18,
