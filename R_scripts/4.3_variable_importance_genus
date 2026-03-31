@@ -3,83 +3,120 @@
 ## ------------------------ Predictor: Diet_type ---------------------------- ##
 # ============================================================================ #
 
-data <- df
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(vegan) 
 
-# Prepare metadata with CLEAN diet labels (no make.names)
-metadata_df <- data.frame(
-  SampleID = rownames(df),
-  Diet_type = factor(df$diet_1),
-  stringsAsFactors = FALSE
-)
+# 1. Filter for multi-diet bioprojects
+multi_diet_bp <- c("PRJEB47836", "PRJNA602518",
+                   "PRJNA1012124", "PRJNA1096155",
+                   "PRJNA508738")
 
-# Extract abundance data (taxonomy columns)
-abundance_table <- data[, grep("d__Bacteria", colnames(data))]
-rownames(abundance_table) <- metadata_df$SampleID
+df_multi <- df %>% filter(bioproject %in% multi_diet_bp)
 
-# genus extraction
+# 2. Extract Abundance Data
+abundance_sub <- df_multi[, grep("d__Bacteria", colnames(df_multi)), drop = FALSE]
+
+set.seed(1000)
+abundance_sub <- rrarefy(abundance_sub, sample = 5000)
+
+# 3. Define Helper Functions (extract_genus & clr_transform)
 extract_genus <- function(t) {
   if (!grepl("g__", t)) return(NA_character_)
   g <- sub(".*g__([^;]+).*", "\\1", t)
   if (g == "" || is.na(g)) return(NA_character_) else return(g)
 }
-genus_names <- sapply(colnames(abundance_table), extract_genus)
-keep <- !is.na(genus_names)
 
-# Aggregate to GENUS level (drop NA genera)
-abundance_table_genus <- rowsum(t(abundance_table[, keep, drop = FALSE]),
-                                group = genus_names[keep], na.rm = TRUE)
-abundance_table_genus <- t(abundance_table_genus)
-
-# EXCLUDE organelle genera from calculations
-abundance_table_genus <- abundance_table_genus[, !(colnames(abundance_table_genus) %in% c("Chloroplast", "Mitochondria")), drop = FALSE]
-
-# Sanity checks
-print(table(metadata_df$Diet_type))
-
-# CLR transformation
 clr_transform <- function(x) {
+  # Add pseudocount of 1 to handle zeros
   x <- x + 1
   log(x / exp(mean(log(x))))
 }
-abundance_table_clr <- t(apply(abundance_table_genus, 1, clr_transform))
 
-# Combine with metadata
-rf_data <- cbind(Diet_type = metadata_df$Diet_type, as.data.frame(abundance_table_clr))
-rf_data$Diet_type <- as.factor(rf_data$Diet_type)
+# 4. Aggregate to Genus Level
+# Note: abundance_sub is now a matrix from rrarefy, so we ensure column names are preserved
+genus_names_sub <- sapply(colnames(abundance_sub), extract_genus)
+keep_sub <- !is.na(genus_names_sub)
 
-# Ensure unique predictor names
-colnames(rf_data) <- make.unique(colnames(rf_data))
+abundance_genus_sub <- rowsum(
+  t(abundance_sub[, keep_sub, drop = FALSE]),
+  group = genus_names_sub[keep_sub],
+  na.rm = TRUE
+)
+abundance_genus_sub <- t(abundance_genus_sub)
 
-# RF Classification
+# 5. Remove Organelles
+abundance_genus_sub <- abundance_genus_sub[,
+                                           !(colnames(abundance_genus_sub) %in%
+                                               c("Chloroplast", "Mitochondria")), drop = FALSE]
+
+# 6. Apply CLR Transformation
+# Note: CLR is applied AFTER rarefaction and aggregation
+clr_sub <- t(apply(abundance_genus_sub, 1, clr_transform))
+
+# 7. Prepare Final Training Data
+rf_data_sub <- cbind(
+  Diet_type = factor(df_multi$diet_1),
+  as.data.frame(clr_sub)
+)
+
+# Ensure unique column names and correct factor levels
+colnames(rf_data_sub) <- make.unique(colnames(rf_data_sub))
+rf_data_sub$Diet_type <- as.factor(rf_data_sub$Diet_type)
+
+# 8. Train the Final Model with 5-Fold CV using Caret
 set.seed(1000)
-train_control <- trainControl(
+
+cv_ctrl <- trainControl(
   method = "cv",
   number = 5,
   classProbs = TRUE,
   savePredictions = "final"
 )
-rf_model <- train(
+
+rf_final <- train(
   Diet_type ~ .,
-  data = rf_data,
+  data = rf_data_sub,
   method = "rf",
-  trControl = train_control,
+  trControl = cv_ctrl,
   ntree = 500,
   importance = TRUE,
   metric = "Accuracy"
 )
-print(rf_model)
 
-# Variable Importance (one-vs-rest)
-diet_classes <- levels(rf_data$Diet_type)
+print(rf_final)
+
+# ---------------------------------------------------------------------------- #
+library(randomForest)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+
+print(rf_final)
+
+# --- 2. Variable Importance (one-vs-rest) ---
+# We need to access the data used to train the model: rf_data_sub
+diet_classes <- levels(rf_data_sub$Diet_type)
 importance_list <- list()
 
 for (diet in diet_classes) {
-  rf_data_binary <- rf_data
+  # Create binary version of the data
+  rf_data_binary <- rf_data_sub
   rf_data_binary$Diet_binary <- ifelse(rf_data_binary$Diet_type == diet, diet, paste0("Not_", diet))
   rf_data_binary$Diet_binary <- factor(rf_data_binary$Diet_binary)
+  
+  # Define X and Y
+  # Note: -1 excludes the first column (Diet_type), and we also remove the new Diet_binary
   x <- rf_data_binary %>% select(-Diet_type, -Diet_binary)
   y <- rf_data_binary$Diet_binary
+  
+  # Train a temporary binary RF to get importance for this specific diet
   rf_bin <- randomForest(x = x, y = y, ntree = 500, importance = TRUE)
+  
+  # Extract importance
   imp <- importance(rf_bin, type = 1, scale = TRUE)
   imp_df <- data.frame(
     Taxa = rownames(imp),
@@ -88,22 +125,28 @@ for (diet in diet_classes) {
   )
   importance_list[[diet]] <- imp_df
 }
+
 importance_long <- bind_rows(importance_list)
 
-# Identify Diet with Highest CLR Abundance per genus
-clr_df <- as.data.frame(abundance_table_clr)
-clr_df$Diet_type <- rf_data$Diet_type
+# --- 3. Identify Diet with Highest CLR Abundance per genus ---
+# We use rf_data_sub because it already contains the CLR transformed data
+# (columns 2 onwards are the CLR values)
+clr_df <- rf_data_sub %>% select(-Diet_type)
+clr_df$Diet_type <- rf_data_sub$Diet_type
+
 clr_long <- clr_df %>%
   pivot_longer(cols = -Diet_type, names_to = "Taxa", values_to = "CLR")
+
 mean_abund <- clr_long %>%
   group_by(Taxa, Diet_type) %>%
   summarise(MeanCLR = mean(CLR), .groups = "drop")
+
 winner_diet <- mean_abund %>%
   group_by(Taxa) %>%
   slice_max(order_by = MeanCLR, n = 1) %>%
   select(Taxa, Winner = Diet_type)
 
-# Merge with importance data
+# --- 4. Merge Importance with Winner Data ---
 importance_long <- importance_long %>%
   left_join(winner_diet, by = "Taxa") %>%
   mutate(
@@ -123,28 +166,34 @@ importance_long <- importance_long %>%
     )
   )
 
-# Get Top 20 genera and Set Order
-top_taxa <- importance_long %>%
+# --- 5. Get Top 20 Genera and Set Order by IMPORTANCE ---
+# 1. Identify Top 20 based on Max Importance
+top_taxa_names <- importance_long %>%
   group_by(Taxa) %>%
   summarise(MaxImportance = max(Importance), .groups = "drop") %>%
   slice_max(order_by = MaxImportance, n = 20, with_ties = FALSE) %>%
   pull(Taxa)
 
+# 2. Define the Order (Descending Importance)
 taxa_order <- importance_long %>%
-  filter(Taxa %in% top_taxa) %>%
+  filter(Taxa %in% top_taxa_names) %>%
   group_by(Taxa) %>%
   summarise(MaxImportance = max(Importance), .groups = "drop") %>%
-  arrange(desc(MaxImportance)) %>%
+  arrange(desc(MaxImportance)) %>% # Highest importance at the top
   pull(Taxa)
 
-# Convert to factors with the correct order
-importance_long$Taxa <- factor(importance_long$Taxa, levels = taxa_order)
+# 3. Apply Factor to Importance Data
+importance_long_top <- importance_long %>%
+  filter(Taxa %in% top_taxa_names) %>%
+  mutate(Taxa = factor(Taxa, levels = taxa_order))
 
-# Prepare CLR data for the distribution plot
+# --- 6. Prepare Data for Plotting ---
+
+# 1. Filter and Clean CLR Data
 clr_long_top <- clr_long %>%
-  filter(Taxa %in% top_taxa) %>%
+  filter(Taxa %in% top_taxa_names) %>%
   mutate(
-    Taxa = factor(Taxa, levels = taxa_order),
+    Taxa = factor(Taxa, levels = taxa_order), # ENFORCE IMPORTANCE ORDER HERE
     Diet_type = case_when(
       Diet_type == "Fishes" ~ "Fish",
       Diet_type == "Fruits" ~ "Fruit",
@@ -155,36 +204,37 @@ clr_long_top <- clr_long %>%
     CLR = as.numeric(CLR)
   )
 
-# Create Background Stripes Data
-importance_long_char <- importance_long %>%
-  filter(Taxa %in% top_taxa) %>%
-  mutate(Taxa_char = as.character(Taxa))
-clr_long_top_char <- clr_long_top %>%
-  mutate(Taxa_char = as.character(Taxa))
+# 2. Create Background Stripes Data
+# We create this directly from taxa_order to ensure alignment
+bg_stripes <- data.frame(Taxa = factor(taxa_order, levels = taxa_order)) %>%
+  mutate(
+    # Convert factor to numeric to determine odd/even rows
+    as_numeric = as.numeric(Taxa),
+    stripe = (as_numeric %% 2 == 1)
+  )
 
-taxa_order_bg <- clr_long_top_char %>%
-  group_by(Taxa_char) %>%
-  summarise(mean_clr = mean(CLR, na.rm = TRUE)) %>%
-  arrange(mean_clr) %>%
-  pull(Taxa_char)
+print("Taxa Order (Importance):")
+print(levels(clr_long_top$Taxa))
 
-bg_stripes <- data.frame(Taxa_char = taxa_order_bg) %>%
-  mutate(stripe = (row_number() %% 2 == 1))
+# ------ 7. plotting 
 
-importance_long_char$Taxa_char <- factor(importance_long_char$Taxa_char, levels = taxa_order_bg)
-clr_long_top_char$Taxa_char <- factor(clr_long_top_char$Taxa_char, levels = taxa_order_bg)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(dplyr)
 
-# ---- Plot 1: Variable importance (Genus) ----
-custom_plot1 <- ggplot() +
-  geom_tile(
-    data = bg_stripes %>% filter(stripe == TRUE),
-    aes(y = Taxa_char, x = 0, height = 0.9, width = Inf),
-    fill = "grey90", alpha = 0.6
-  ) +
+reversed_order <- rev(taxa_order)
+
+importance_long_top <- importance_long_top %>%
+  mutate(Taxa = factor(Taxa, levels = reversed_order))
+
+clr_long_top <- clr_long_top %>%
+  mutate(Taxa = factor(Taxa, levels = reversed_order))
+
+# --- 1. PLOT 1: VARIABLE IMPORTANCE (Left Panel) ---
+custom_plot1 <- ggplot(importance_long_top, aes(x = Importance, y = Taxa, fill = Diet)) +
   geom_col(
-    data = importance_long_char,
-    aes(x = Importance, y = Taxa_char, fill = Diet),
-    position = position_dodge(0.8),
+    position = position_dodge(width = 0.8),
     width = 0.7
   ) +
   scale_fill_manual(
@@ -192,77 +242,79 @@ custom_plot1 <- ggplot() +
       "Insect" = "#ff5e2b",
       "Blood"  = "#ba0970",
       "Fruit"  = "#2E8B57",
-      "Fish"   = "#303F9F")
-    
+      "Fish"   = "#303F9F"
+    )
   ) +
   labs(x = "Mean Decrease Accuracy", y = "Genus") +
-  theme_minimal(base_size = 14) +
+  theme_classic(base_size = 14) + # theme_classic gives a clean white background with axes
   theme(
-    panel.grid.major = element_blank(),
+    panel.grid.major = element_blank(), # Ensure no grid lines
     panel.grid.minor = element_blank(),
-    axis.text.y = element_text(face = "italic", size = 12),
+    axis.text.y = element_text(face = "italic", size = 12, color = "black"),
     axis.title = element_text(face = "bold"),
     legend.position = "none"
   )
 
-# ---- Plot 2: CLR abundance (Genus) ----
-custom_plot2 <- ggplot() +
-  geom_tile(
-    data = bg_stripes %>% filter(stripe == TRUE),
-    aes(y = Taxa_char, x = 0, height = 0.9, width = Inf),
-    fill = "grey90", alpha = 0.6
-  ) +
+# --- 2. PLOT 2: CLR ABUNDANCE (Right Panel) ---
+custom_plot2 <- ggplot(clr_long_top, aes(x = CLR, y = Taxa, fill = Diet_type, color = Diet_type)) +
   geom_boxplot(
-    data = clr_long_top_char,
-    aes(x = CLR, y = Taxa_char, fill = Diet_type),
-    outlier.size = 0.8,
-    width = 0.7
+    outlier.size = 0.5,
+    outlier.alpha = 0.5,
+    width = 0.7,
+    alpha = 0.7
   ) +
   scale_fill_manual(
     values = c(
       "Insect" = "#ff5e2b",
       "Blood"  = "#ba0970",
       "Fruit"  = "#2E8B57",
-      "Fish"   = "#303F9F")
-    
+      "Fish"   = "#303F9F"
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "Insect" = "#cc4b22",
+      "Blood"  = "#940759",
+      "Fruit"  = "#246f45",
+      "Fish"   = "#26327f"
+    )
   ) +
   labs(x = "CLR Abundance", y = NULL) +
-  theme_minimal(base_size = 14) +
+  theme_classic(base_size = 14) + # clean white background
   theme(
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
-    axis.text.y = element_blank(),
-    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),       # Hide Y labels (they are on the left plot)
+    axis.line.y = element_blank(),       # Hide Y axis line for cleaner join
+    axis.ticks.y = element_blank(),
     axis.title = element_text(face = "bold"),
     legend.position = "none"
   )
 
-# Legend
-legend_plot <- ggplot(importance_long_char,
-                      aes(x = Importance, y = Taxa_char, fill = Diet)) +
-  geom_col(position = position_dodge(0.8)) +
+# --- 3. LEGEND ---
+legend_dummy <- ggplot(importance_long_top, aes(x = Importance, y = Taxa, fill = Diet)) +
+  geom_col() +
   scale_fill_manual(
     values = c(
       "Insect" = "#ff5e2b",
       "Blood"  = "#ba0970",
       "Fruit"  = "#2E8B57",
-      "Fish"   = "#303F9F")
-    ,
-    name = "Diet Group",
-    breaks = c("Insect", "Fruit", "Fish", "Blood"),
-    labels = c("Insect", "Fruit", "Fish", "Blood")
+      "Fish"   = "#303F9F"
+    ),
+    name = "Diet Group"
   ) +
-  theme(legend.position = "bottom",     
-        legend.text = element_text(size = 12),              # Size of "Insect", "Fruit", etc.
-        legend.title = element_text(size = 12, face = "bold"), # Size of "Diet Group"
-        legend.key.size = unit(0.5, "cm")                     # Optional: Makes the color boxes bigger
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.key.size = unit(0.8, "cm")
   )
 
-plot_legend <- cowplot::get_legend(legend_plot)
+plot_legend <- cowplot::get_legend(legend_dummy)
 
-# Combine plots with legend
-CLR_combined_genus <- (custom_plot1 + custom_plot2) /
-  plot_legend +
+# --- 4. COMBINE PLOTS ---
+CLR_combined_genus <- (custom_plot1 + custom_plot2) / 
+  plot_legend + 
   plot_layout(heights = c(10, 1))
 
 print(CLR_combined_genus)
