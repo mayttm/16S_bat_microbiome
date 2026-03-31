@@ -4,6 +4,7 @@
 
 library(tidyverse)
 library(RColorBrewer)
+library(vegan) # Added for rarefaction
 
 # Load data
 #setwd("C:/Users/thongthum.t/OneDrive - University of Florida/Projects/Bat Microbiome/2_Analysis/variable_importance/160")
@@ -11,6 +12,7 @@ setwd("C:/Users/mmayy/OneDrive - University of Florida/Projects/Bat Microbiome/2
 data <- read_csv("output/df_taxa_metadata_160.csv")
 
 # ------------------- A. CLEANING AND FILTERING
+
 # Extract abundance columns for checking
 tax_cols_check <- grep("^d__", names(data), value = TRUE)
 abundance_check <- data[, tax_cols_check]
@@ -45,8 +47,10 @@ abundance_t <- t(abundance)
 abundance_family <- rowsum(abundance_t, group = family_names, reorder = FALSE)
 
 # Filter 2: Remove Contaminants (Chloroplast/Mitochondria)
-abundance_family <- abundance_family[rownames(abundance_family) != "Chloroplast", ]
-abundance_family <- abundance_family[rownames(abundance_family) != "Mitochondria", ]
+# Note: abundance_family is currently (Family x Sample), so we subset rows
+abundance_family <- abundance_family[!rownames(abundance_family) %in% c("Chloroplast", "Mitochondria"), ]
+
+# Transpose to (Sample x Family) for vegan/downstream analysis
 abundance_family <- t(abundance_family)
 rownames(abundance_family) <- sample_ids
 
@@ -55,11 +59,10 @@ abundance_family_df <- as.data.frame(abundance_family)
 
 # Remove "Unclassified" column if present
 if ("Unclassified" %in% colnames(abundance_family_df)) {
-  abundance_family_df$Unclassified <- NULL 
+  abundance_family_df$Unclassified <- NULL
 }
 
 # Filter 3: CRITICAL READ DEPTH FILTER (Fixes the "Flat Block" issue)
-
 # Calculate total reads per sample
 row_sums <- rowSums(abundance_family_df)
 
@@ -84,12 +87,21 @@ abundance_family_df <- abundance_family_df[valid_rows, ]
 diet_type <- diet_type[valid_rows]
 species_name <- species_name[valid_rows]
 animals <- animals[valid_rows]
-sample_ids <- sample_ids[valid_rows] 
+sample_ids <- sample_ids[valid_rows]
 bioproject <- bioproject[valid_rows]
+
+# --- NEW STEP: RAREFACTION TO 5000 ---
+# Now that all remaining samples have >= 5000 reads, we rarefy them to exactly 5000.
+print("Applying rarefaction to 5000 reads...")
+set.seed(1000)
+abundance_family_df <- rrarefy(abundance_family_df, sample = 5000)
+# rrarefy returns a matrix, convert back to df
+abundance_family_df <- as.data.frame(abundance_family_df)
 
 # ----------- B. NORMALIZATION AND PREPARATION
 
 # Normalize to relative abundance (%)
+# Note: Since we rarefied, rowSums are now all 5000.
 abundance_family_rel <- as.data.frame(abundance_family_df / rowSums(abundance_family_df) * 100)
 
 # Add metadata back to the relative abundance dataframe
@@ -105,6 +117,8 @@ bacteria_cols <- sapply(abundance_family_rel, is.numeric)
 # Get top 20 families based on overall abundance
 overall_top <- colSums(abundance_family_rel[, bacteria_cols])
 top_families <- names(sort(overall_top, decreasing = TRUE)[1:20])
+
+print("Top 20 Families found:")
 print(top_families)
 
 # Calculate 'Other' category
@@ -114,11 +128,11 @@ final_data <- cbind(top_data, Other = other)
 
 # Add metadata to final object
 final_data$Sample <- abundance_family_rel$Sample
-final_data$Diet_type <- factor(abundance_family_rel$Diet_type,
+final_data$Diet_type <- factor(abundance_family_rel$Diet_type, 
                                levels = c("Fish", "Insect", "Fruit", "Blood"))
 final_data$Species <- abundance_family_rel$Species
 final_data$Animal <- abundance_family_rel$Animal
-final_data$BioProject <- bioproject 
+final_data$BioProject <- bioproject
 
 # ------------------- C. EXPORT FULL SUMMARY (ALL FAMILIES) -------------------
 library(dplyr)
@@ -140,8 +154,8 @@ full_summary_table <- abundance_family_rel %>%
 # 3. Pivot to long format (Diet_type, Bacterial_Family, Average_Relative_Abundance)
 full_long_summary <- full_summary_table %>%
   pivot_longer(
-    cols = -Diet_type, 
-    names_to = "Bacterial_Family", 
+    cols = -Diet_type,
+    names_to = "Bacterial_Family",
     values_to = "Average_Relative_Abundance"
   )
 
@@ -153,6 +167,7 @@ full_long_summary_filtered <- full_long_summary %>%
   arrange(Diet_type, desc(Average_Relative_Abundance))
 
 # 5. Export the table
+if (!dir.exists("output_bioproj_prim")) { dir.create("output_bioproj_prim") }
 write_csv(full_long_summary_filtered, "output_bioproj_prim/Average_Rel_Abundance_Families.csv")
 
 # Print check
@@ -223,7 +238,7 @@ if("Peptostreptococcaceae" %in% names(family_colors)) family_colors["Peptostrept
 if("Bacteroidaceae" %in% names(family_colors)) family_colors["Bacteroidaceae"] <- "#24bfa3"
 if("Burkholderiaceae" %in% names(family_colors)) family_colors["Burkholderiaceae"] <- "#9467bd"
 if("Chlamydiaceae" %in% names(family_colors)) family_colors["Chlamydiaceae"] <- "#8c564b"
-if("Moraxellaceae" %in% names(family_colors)) family_colors["Moraxellaceae"] <- "#e377c2" 
+if("Moraxellaceae" %in% names(family_colors)) family_colors["Moraxellaceae"] <- "#e377c2"
 
 # ----------------- D. GENERATE PLOT
 
