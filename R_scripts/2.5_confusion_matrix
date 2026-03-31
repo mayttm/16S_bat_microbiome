@@ -7,130 +7,7 @@ library(tidyverse)
 library(caret)
 library(patchwork)
 
-# Function to generate confusion matrix plot
-make_confusion_plot <- function(data, remove_outliers = TRUE, plot_title = "") {
-  if (remove_outliers) {
-    outliers <- c("K058683-R", "K058706-R", "K058789-R", "K058689-R", "K058814-R", "K058785-R")
-    data <- data[!(data$index %in% outliers), ]
-  }
-  
-  # Prepare metadata
-  metadata <- data.frame(
-    SampleID = data$index,
-    Diet_type = factor(make.names(data$Diet_type)),
-    stringsAsFactors = FALSE
-  )
-  
-  # Extract abundance data
-  abundance_table <- data[, grep("d__Bacteria", colnames(data))]
-  rownames(abundance_table) <- metadata$SampleID
-  
-  # Extract family names
-  extract_family <- function(tax_string) {
-    if (grepl("g__", tax_string)) {
-      gsub(".*;g__([^;]+).*", "\\1", tax_string)
-    } else if (grepl("f__", tax_string)) {
-      gsub(".*;f__([^;]+).*", "\\1", tax_string)
-    } else {
-      NA
-    }
-  }
-  
-  family_names <- sapply(colnames(abundance_table), extract_family)
-  abundance_table_family <- rowsum(t(abundance_table), group = family_names, na.rm = TRUE)
-  abundance_table_family <- t(abundance_table_family)
-  abundance_table_family <- abundance_table_family[, !is.na(colnames(abundance_table_family))]
-  
-  # CLR transformation
-  clr_transform <- function(x) {
-    x <- x + 1
-    log(x / exp(mean(log(x))))
-  }
-  abundance_table_clr <- t(apply(abundance_table_family, 1, clr_transform))
-  
-  # Prepare data for random forest
-  rf_data <- cbind(Diet_type = metadata$Diet_type, as.data.frame(abundance_table_clr))
-  rf_data$Diet_type <- as.factor(rf_data$Diet_type)
-  
-  # Train random forest model
-  set.seed(1000)
-  rf_model <- train(
-    Diet_type ~ ., data = rf_data,
-    method = "rf",
-    trControl = trainControl(method = "cv", number = 5, classProbs = TRUE, savePredictions = "final"),
-    ntree = 500, importance = TRUE, metric = "Accuracy"
-  )
-  
-  # Get predictions
-  cv_predictions <- rf_model$pred
-  cv_predictions$obs <- factor(cv_predictions$obs, levels = levels(rf_data$Diet_type))
-  cv_predictions$pred <- factor(cv_predictions$pred, levels = levels(rf_data$Diet_type))
-  
-  # Create confusion matrix
-  conf_matrix_cv <- confusionMatrix(cv_predictions$pred, cv_predictions$obs)
-  cm_df <- as.data.frame(conf_matrix_cv$table)
-  
-  # --- Calculate Ratios ---
-  cm_df <- cm_df %>%
-    group_by(Reference) %>%
-    mutate(
-      Total = sum(Freq),
-      Ratio = Freq / Total,
-      Label = sprintf("%.2f", Ratio)
-    ) %>%
-    ungroup()
-  # --- MODIFICATION END ---
-  
-  # Create plot
-  ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Ratio)) + # Fill mapped to Ratio
-    geom_tile(color = "white", linewidth = 0.6) +
-    geom_text(aes(label = Label),
-              color = ifelse(cm_df$Ratio > 0.5, "black", "white"), 
-              size = 5, fontface = "bold") +
-    # MODIFIED: Changed labels to format as 2 decimal places
-    scale_fill_viridis_c(name = "Ratio", labels = function(x) sprintf("%.2f", x)) +
-    labs(x = "Expected Diet", y = "Predicted Diet", title = plot_title) +
-    theme_minimal(base_size = 14) +
-    theme(
-      plot.margin = ggplot2::margin(t = 20, r = 10, b = 10, l = 10, unit = "pt"),
-      panel.grid = element_blank(),
-      axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
-      axis.text.y = element_text(face = "bold"),
-      axis.title = element_text(face = "bold"),
-      legend.title = element_text(face = "bold")
-    )
-}
-
-library(readr)
-library(ggplot2)
-library(patchwork)
-
-# Load data
-# Ensure this path matches your local environment
-data <- read_csv("output/df_taxa_metadata_160.csv")
-
-# Create plot
-conf_mat_plot_diet1 <- make_confusion_plot(data, remove_outliers = FALSE, plot_title = "")
-
-# Display plot
-conf_mat_plot_diet1
-
-# Save the plot in multiple formats
-out_dir <- "output_bioproj_prim"
-dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-
-for (ext in c("jpg", "pdf", "tiff")) {
-  ggsave(
-    filename = file.path(out_dir, paste0("confusion_matrix_diet1.", ext)),
-    plot = conf_mat_plot_diet1,
-    width = 10,
-    height = 8,
-    units = "in",
-    dpi = 300
-  )
-}
-
-## ------------------- confusion matrix counts ---------------------------------
+## ---------------- confusion matrix counts (supplemental) ------------------ ##
 
 make_confusion_plot_counts <- function(data, remove_outliers = TRUE, plot_title = "") {
   
@@ -238,110 +115,281 @@ for (ext in c("jpg", "pdf", "tiff")) {
   )
 }
 
+## ========================================================================== ##
+## ------------- confusion matrix (only multidiet bioprojects) -------------- ##
+
+## NOTE: perform LOBOCV analysis and SHAP analysis
+## script: batmicrobiome_shap_script_160_20260313
+
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(vegan) 
+
+# 1. Filter for multi-diet bioprojects
+multi_diet_bp <- c("PRJEB47836", "PRJNA602518",
+                   "PRJNA1012124", "PRJNA1096155",
+                   "PRJNA508738")
+
+df_multi <- df %>% filter(bioproject %in% multi_diet_bp)
+
+# 2. Extract Abundance Data
+abundance_sub <- df_multi[, grep("d__Bacteria", colnames(df_multi)), drop = FALSE]
+
+set.seed(1000)
+abundance_sub <- rrarefy(abundance_sub, sample = 5000)
+
+# 3. Define Helper Functions (extract_genus & clr_transform)
+extract_genus <- function(t) {
+  if (!grepl("g__", t)) return(NA_character_)
+  g <- sub(".*g__([^;]+).*", "\\1", t)
+  if (g == "" || is.na(g)) return(NA_character_) else return(g)
+}
+
+clr_transform <- function(x) {
+  # Add pseudocount of 1 to handle zeros
+  x <- x + 1
+  log(x / exp(mean(log(x))))
+}
+
+# 4. Aggregate to Genus Level
+# Note: abundance_sub is now a matrix from rrarefy, so we ensure column names are preserved
+genus_names_sub <- sapply(colnames(abundance_sub), extract_genus)
+keep_sub <- !is.na(genus_names_sub)
+
+abundance_genus_sub <- rowsum(
+  t(abundance_sub[, keep_sub, drop = FALSE]),
+  group = genus_names_sub[keep_sub],
+  na.rm = TRUE
+)
+abundance_genus_sub <- t(abundance_genus_sub)
+
+# 5. Remove Organelles
+abundance_genus_sub <- abundance_genus_sub[,
+                                           !(colnames(abundance_genus_sub) %in%
+                                               c("Chloroplast", "Mitochondria")), drop = FALSE]
+
+# 6. Apply CLR Transformation
+# Note: CLR is applied AFTER rarefaction and aggregation
+clr_sub <- t(apply(abundance_genus_sub, 1, clr_transform))
+
+# 7. Prepare Final Training Data
+rf_data_sub <- cbind(
+  Diet_type = factor(df_multi$diet_1),
+  as.data.frame(clr_sub)
+)
+
+# Ensure unique column names and correct factor levels
+colnames(rf_data_sub) <- make.unique(colnames(rf_data_sub))
+rf_data_sub$Diet_type <- as.factor(rf_data_sub$Diet_type)
+
+# 8. Train the Final Model with 5-Fold CV using Caret
+set.seed(1000)
+
+cv_ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  savePredictions = "final"
+)
+
+rf_final <- train(
+  Diet_type ~ .,
+  data = rf_data_sub,
+  method = "rf",
+  trControl = cv_ctrl,
+  ntree = 500,
+  importance = TRUE,
+  metric = "Accuracy" # Ensure metric is quoted
+)
+
+#rf_final <- randomForest(
+#  x          = rf_data_sub[, -1],
+#  y          = rf_data_sub$Diet_type,
+#  ntree      = 500,
+#  importance = TRUE,
+#  keep.forest = TRUE
+#)
+
+print(rf_final)
+print(rf_final$results)
+
+# --------------- Extract the training data used in rf_final ----------------- #
+train_data <- rf_final$trainingData
+
+diet_counts <- table(train_data$.outcome)
+
+diet_counts_df <- as.data.frame(diet_counts)
+colnames(diet_counts_df) <- c("Diet_type", "Sample_count")
+
+print(diet_counts_df)
+# ---------------------------------------------------------------------------- #
+
+# Define the output directory
+output_dir <- "output_bioproj_prim/statistics"
+
+# Create the directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Extract the results (Accuracy, Kappa, mtry, etc.)
+rf_results_df <- rf_final$results
+
+# Add a column to identify the best model (optional but helpful)
+rf_results_df$Best_Model <- ifelse(
+  rf_results_df$mtry == rf_final$bestTune$mtry, 
+  "TRUE", 
+  "FALSE"
+)
+
+# Define the file path
+output_file <- file.path(output_dir, "rf_model_performance_diet1.csv")
+
+# Write to CSV
+write.csv(rf_results_df, output_file, row.names = FALSE)
+
+print(paste("Model statistics saved to:", output_file))
+
+## ---- make a confusion matrix plot 
+
+make_confusion_plot_caret <- function(model, plot_title = "") {
+  
+  # 1. Check if predictions exist
+  if (is.null(model$pred)) {
+    stop("No predictions found. Ensure 'savePredictions' was set to 'final' or TRUE in trainControl.")
+  }
+  
+  # 2. Extract Predictions and Observations
+  # caret stores the CV predictions for the best model in model$pred
+  # It has columns: 'pred' (predicted), 'obs' (observed), 'rowIndex'
+  results <- model$pred
+  
+  predicted_classes <- results$pred
+  observed_classes  <- results$obs
+  
+  # Ensure factors have the same levels (important for square matrix)
+  # We use the levels from the observed data to define the factor levels
+  all_levels <- levels(observed_classes)
+  predicted_classes <- factor(predicted_classes, levels = all_levels)
+  
+  # 3. Create confusion matrix table
+  cm_table <- table(Prediction = predicted_classes, Reference = observed_classes)
+  cm_df <- as.data.frame(cm_table)
+  
+  # 4. Calculate Ratios
+  cm_df <- cm_df %>%
+    group_by(Reference) %>%
+    mutate(
+      Total = sum(Freq),
+      Ratio = Freq / Total,
+      Label = sprintf("%.2f", Ratio)
+    ) %>%
+    ungroup()
+  
+  # 5. Create plot
+  ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Ratio)) +
+    geom_tile(color = "white", linewidth = 0.6) +
+    geom_text(aes(label = Label),
+              color = ifelse(cm_df$Ratio > 0.5, "black", "white"),
+              size = 5, fontface = "bold") +
+    scale_fill_viridis_c(name = "Ratio", labels = function(x) sprintf("%.2f", x)) +
+    labs(x = "Expected Diet", y = "Predicted Diet", title = plot_title) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.margin = ggplot2::margin(t = 20, r = 10, b = 10, l = 10, unit = "pt"),
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+      axis.text.y = element_text(face = "bold"),
+      axis.title.x = element_text(size = 14, face = "bold"),
+      axis.title.y = element_text(size = 14, face = "bold"),
+      legend.title = element_text(face = "bold")
+    )
+}
+
+# Generate the plot using the new function
+conf_mat_plot_diet1_multi <- make_confusion_plot_caret(rf_final, plot_title = "")
+print(conf_mat_plot_diet1_multi)
+
+out_dir <- "output_bioproj_prim"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (ext in c("jpg", "pdf", "tiff")) {
+  ggsave(
+    filename = file.path(out_dir, paste0("confusion_matrix_diet1_multi.", ext)),
+    plot = conf_mat_plot_diet1_multi,
+    width = 10,
+    height = 8,
+    units = "in",
+    dpi = 300
+  )
+}
+
 ## ------------ 1.4) identifying misclassified samples
 
 library(tidyverse)
-library(caret)
+library(randomForest)
 
-export_misclassified_diet1 <- function(data, 
-                                       remove_outliers = TRUE, 
-                                       out_dir = "output_bioproj_prim", 
-                                       filename = "misclassified_samples_diet1.csv") {
+export_misclassified_diet1_caret <- function(model, 
+                                             original_data, 
+                                             out_dir = "output_bioproj_prim", 
+                                             filename = "misclassified_samples_diet1.csv") {
   
   # --- 1. SETUP OUTPUT DIRECTORY ---
-  # Create the directory if it does not exist
   if (!dir.exists(out_dir)) {
     dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-    message(paste("Created directory:", out_dir))
   }
   
-  # --- 2. DATA PREPROCESSING ---
-  if (remove_outliers) {
-    outliers <- c("K058683-R", "K058706-R", "K058789-R", "K058689-R", "K058814-R", "K058785-R")
-    data <- data[!(data$index %in% outliers), ]
+  # --- 2. EXTRACT PREDICTIONS FROM CARET OBJECT ---
+  # Check if predictions exist
+  if (is.null(model$pred)) {
+    stop("No predictions found in model object. Ensure 'savePredictions' was set to 'final' or TRUE in trainControl.")
   }
   
-  # Prepare metadata (Ensuring we keep the tracking columns)
-  metadata <- data.frame(
-    SampleID = data$index,
-    Diet_type = factor(make.names(data$Diet_type)),
-    cw_diet1 = data$cw_diet1,
-    bioproject = data$bioproject,
-    sample_type = data$sample_type,
-    stringsAsFactors = FALSE
-  )
+  # Extract the predictions dataframe
+  # This contains columns: pred, obs, rowIndex, etc.
+  pred_results <- model$pred
   
-  # Extract abundance data
-  abundance_table <- data[, grep("d__Bacteria", colnames(data))]
-  rownames(abundance_table) <- metadata$SampleID
-  
-  # Extract family names
-  extract_family <- function(tax_string) {
-    if (grepl("g__", tax_string)) {
-      gsub(".*;g__([^;]+).*", "\\1", tax_string)
-    } else if (grepl("f__", tax_string)) {
-      gsub(".*;f__([^;]+).*", "\\1", tax_string)
-    } else {
-      NA
-    }
+  # Filter to only the best tuning parameter (if multiple were tried)
+  # Caret keeps predictions for all tuning parameters in model$pred
+  # We only want the ones corresponding to the final model
+  if ("mtry" %in% colnames(pred_results)) {
+    pred_results <- pred_results[pred_results$mtry == model$bestTune$mtry, ]
   }
   
-  family_names <- sapply(colnames(abundance_table), extract_family)
-  abundance_table_family <- rowsum(t(abundance_table), group = family_names, na.rm = TRUE)
-  abundance_table_family <- t(abundance_table_family)
-  abundance_table_family <- abundance_table_family[, !is.na(colnames(abundance_table_family))]
-  
-  # CLR transformation
-  clr_transform <- function(x) {
-    x <- x + 1
-    log(x / exp(mean(log(x))))
-  }
-  abundance_table_clr <- t(apply(abundance_table_family, 1, clr_transform))
-  
-  # Prepare data for random forest
-  rf_data <- cbind(Diet_type = metadata$Diet_type, as.data.frame(abundance_table_clr))
-  rf_data$Diet_type <- as.factor(rf_data$Diet_type)
-  
-  # --- 3. TRAIN MODEL ---
-  set.seed(1000)
-  rf_model <- train(
-    Diet_type ~ ., data = rf_data,
-    method = "rf",
-    # savePredictions = "final" allows us to map back to specific rows later
-    trControl = trainControl(method = "cv", number = 5, savePredictions = "final"),
-    ntree = 500, importance = TRUE
-  )
-  
-  # --- 4. IDENTIFY MISCLASSIFIED SAMPLES ---
-  
-  # Extract predictions from the final model
-  cv_results <- rf_model$pred
-  
-  # Filter for rows where Prediction (pred) does not match Observation (obs)
-  # rowIndex tells us which row in 'metadata' this prediction corresponds to
-  misclassified_rows <- cv_results[cv_results$pred != cv_results$obs, ]
+  # --- 3. IDENTIFY MISCLASSIFIED SAMPLES ---
+  # Filter rows where Prediction does not match Observation
+  misclassified_rows <- pred_results[pred_results$pred != pred_results$obs, ]
   
   if (nrow(misclassified_rows) == 0) {
     message("Great news! The model achieved 100% accuracy. No misclassified samples to export.")
     return(NULL)
   }
   
-  # Extract the metadata for these specific rows using rowIndex
-  misclassified_info <- metadata[misclassified_rows$rowIndex, ]
+  # --- 4. MATCH BACK TO ORIGINAL METADATA ---
+  # Caret preserves the original row index in the 'rowIndex' column
+  # We use this to pull the correct metadata from 'original_data'
   
-  # Add the Predicted value to this dataframe
-  misclassified_info$Predicted_Diet <- misclassified_rows$pred
+  # Get the indices of the misclassified samples
+  original_indices <- misclassified_rows$rowIndex
   
-  # Organize columns
-  final_output <- misclassified_info %>%
-    rename(Observed_Diet = Diet_type) %>%
-    select(SampleID, Observed_Diet, Predicted_Diet, cw_diet1, bioproject, sample_type)
+  # Extract the corresponding rows from the original dataframe
+  original_subset <- original_data[original_indices, ]
+  
+  # Construct the final dataframe
+  final_output <- data.frame(
+    SampleID       = rownames(original_subset), # Assuming rownames are SampleIDs
+    Observed_Diet  = misclassified_rows$obs,
+    Predicted_Diet = misclassified_rows$pred,
+    Bioproject     = original_subset$bioproject,
+    cw_diet1       = original_subset$cw_diet1,      # Adjust if column name differs
+    Sample_Type    = original_subset$sample_type,   # Adjust if column name differs
+    stringsAsFactors = FALSE
+  )
   
   # --- 5. EXPORT ---
-  # Combine directory and filename
   full_path <- file.path(out_dir, filename)
-  
-  write_csv(final_output, full_path)
+  write.csv(final_output, full_path, row.names = FALSE)
   
   message(paste("Export complete. Found", nrow(final_output), "misclassified samples."))
   message(paste("Saved to:", full_path))
@@ -349,9 +397,10 @@ export_misclassified_diet1 <- function(data,
   return(final_output)
 }
 
-data <- read_csv("output/df_taxa_metadata_160.csv")
-
-wrong_preds <- export_misclassified_diet1(data, 
-                                          remove_outliers = TRUE,
-                                          out_dir = "output_bioproj_prim", 
-                                          filename = "misclassified_samples_diet1.csv")
+# Run the function
+wrong_preds <- export_misclassified_diet1_caret(
+  model = rf_final,
+  original_data = df_multi,
+  out_dir = "output_bioproj_prim/statistics", 
+  filename = "misclassified_samples_diet1_multidiet.csv"
+)
